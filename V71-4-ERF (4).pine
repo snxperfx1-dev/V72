@@ -1294,6 +1294,14 @@ float erf_dissipationConfidence = math.min(
 // END ENERGY RESOLUTION FRAMEWORK
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ── V72: ERF TRADE READINESS + ENTRY GATE + RIE ─────────────────────────────
+float erf_tradeReadiness = math.min((re_resolutionState == "RESOLVED" ? 40.0 : re_resolutionState == "PARTIALLY RESOLVED" ? 25.0 : 10.0) + re_recursiveCompletionScore * 0.25 + (100.0 - re_residualEnergyScore) * 0.20 + erf_confidence * 0.15, 100.0)
+bool erf_entryGate = erf_tradeReadiness >= 45.0
+float rot_pressure = math.min(obs_DecayScore * 0.35 + obs_AbsorptionScore * 0.30 + (convexityScore > 40 ? convexityScore * 0.20 : 0.0) + (obs_LiquidityScore > 50 ? 15.0 : 0.0), 100.0)
+float rot_controlStability = math.min(obs_ExpansionScore * 0.40 + (efficiency > effThresh ? 30.0 : efficiency > effThresh * 0.7 ? 15.0 : 0.0) + (ede_state <= 2 ? 30.0 : ede_state <= 3 ? 15.0 : 0.0), 100.0)
+float rot_transferProbability = math.min(rot_pressure * 0.50 + (100.0 - rot_controlStability) * 0.30 + (re_resolutionState == "UNRESOLVED" ? 20.0 : re_resolutionState == "PARTIALLY RESOLVED" ? 10.0 : 0.0), 100.0)
+string rot_state = rot_transferProbability >= 75 ? "TRANSFER_IMMINENT" : rot_transferProbability >= 50 ? "CONTESTED" : rot_transferProbability >= 25 ? "SOFTENING" : "STABLE"
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // SECTION 9 — PHYSICS OBSERVATION LAYER (declared before Engine 1A above)
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2407,6 +2415,14 @@ int flipzoneStagesComplete =
 
 float flipzoneScore = flipzoneStagesComplete / 5.0 * 100.0
 
+// ── V72: INVALIDATION ENGINE (IE2) + TARGET ENGINE (TE) Forward Vars ─────────
+float inv_activeStop = direction == 1 and not na(flipBot) ? flipBot - atr * 0.10 : direction == -1 and not na(flipTop) ? flipTop + atr * 0.10 : direction == 1 and not na(point4OriginLow) ? point4OriginLow - atr * 0.25 : direction == -1 and not na(point4OriginHigh) ? point4OriginHigh + atr * 0.25 : na
+bool  inv_invalidated = not na(inv_activeStop) and (direction == 1 ? close < inv_activeStop : close > inv_activeStop)
+float inv_riskInPts = not na(inv_activeStop) ? math.abs(close - inv_activeStop) : na
+var float te_tp1 = na
+var float te_rr_tp1 = na
+var bool  te_rrGate = true
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // SECTION 15 — SCORING ENGINE
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2651,14 +2667,16 @@ bool longSignal = showSignals and beliefEntryLong and
      not signalLocked and not withinLongLock and
      edgePassesFilter and
      preConvOK_long and inducOK_long and
-     structLongOK and liqSweepOK and obFresh and htfLongOK
+     structLongOK and liqSweepOK and obFresh and htfLongOK and
+     erf_entryGate and te_rrGate and not inv_invalidated
 
 bool shortSignal = showSignals and beliefEntryShort and
      htfAligned and gradeOK and
      not signalLocked and not withinShortLock and
      edgePassesFilter and
      preConvOK_short and inducOK_short and
-     structShortOK and liqSweepOK and obFresh and htfShortOK
+     structShortOK and liqSweepOK and obFresh and htfShortOK and
+     erf_entryGate and te_rrGate and not inv_invalidated
 
 if longSignal
     lastSignalBar := bar_index
@@ -5613,11 +5631,57 @@ if _frzN3 > 0
                     frz_bestOwner  := _own
                     frz_bestStatus := _st
 
-// ════════════════════════════════════════════════════════════════════════════
-// SECTION 20 — FUTURE RETURN DASHBOARD  [Phase 2]
-// "RECURSIVE FUTURE RETURN" panel — bottom_right.
-// Shows: Zone # | Owner | Score | Priority | Status
-// Max 8 zones shown (most recent / highest score first).
+// ═══════════════════════════════════════════════════════════════════════════════
+// V72 — DECISION ENGINE COMPUTATIONS (no new inputs, no new request.security)
+// Order: FRZ↔ERF → TE → MCE → NE → TQE → DOE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── FRZ↔ERF Unification ─────────────────────────────────────────────────────
+float frz_bestZoneMid = frz_activeCount > 0 and frz_bestScore > 0 ? (array.size(frz_topArr) > 0 ? (array.get(frz_topArr, 0) + array.get(frz_botArr, 0)) / 2.0 : na) : na
+float frz_distanceToZone = not na(frz_bestZoneMid) ? math.abs(close - frz_bestZoneMid) / math.max(atr, 1e-10) : na
+bool frz_inProximity = not na(frz_distanceToZone) and frz_distanceToZone < 2.0
+bool frz_attractorConvergence = frz_inProximity and not na(eae_primaryAttractorPrice) and not na(frz_bestZoneMid) and math.abs(eae_primaryAttractorPrice - frz_bestZoneMid) / math.max(atr, 1e-10) < 0.5
+float frz_entryBonus = frz_inProximity and direction != 0 ? 15.0 : 0.0
+
+// ── Target Engine (TE) — FRZ scan ───────────────────────────────────────────
+float _te_bp = na
+float _te_bs = 0.0
+int _te_sz = array.size(frz_topArr)
+if _te_sz > 0 and direction != 0
+    for _i = 0 to math.min(_te_sz - 1, 29)
+        int _d = array.get(frz_dirArr, _i)
+        float _m = (array.get(frz_topArr, _i) + array.get(frz_botArr, _i)) / 2.0
+        string _x = array.get(frz_statusArr, _i)
+        int _s = array.get(frz_scoreArr, _i)
+        if (_x == "Open" or _x == "Partial") and _d == direction and (direction == 1 ? _m > close : _m < close) and _s > _te_bs
+            _te_bs := float(_s)
+            _te_bp := _m
+te_tp1 := _te_bp
+te_rr_tp1 := not na(te_tp1) and not na(inv_riskInPts) and inv_riskInPts > 0 ? math.abs(te_tp1 - close) / inv_riskInPts : na
+te_rrGate := not na(te_rr_tp1) ? te_rr_tp1 >= 1.5 : true
+
+// ── MCE (2-TF using existing tf1/tf2) ───────────────────────────────────────
+float mce_alignmentScore = direction != 0 ? ((dir_tf1 == direction ? 1.0 : 0.0) + (dir_tf2 == direction ? 1.0 : 0.0)) / 2.0 * 100.0 : 50.0
+float mce_htfAlignmentScore = (dir_tf2 == direction ? 60.0 : dir_tf2 == 0 ? 30.0 : 0.0) + (dir_tf1 == direction ? 40.0 : dir_tf1 == 0 ? 20.0 : 0.0)
+
+// ── Narrative Engine (NE) ───────────────────────────────────────────────────
+string ne_dominantNarrative = direction == 1 and mce_htfAlignmentScore >= 70 and ie1a_currentPhase == "Expansion" and rot_transferProbability < 40 ? "Bullish Continuation" : direction == -1 and mce_htfAlignmentScore >= 70 and ie1a_currentPhase == "Expansion" and rot_transferProbability < 40 ? "Bearish Continuation" : direction == 1 and mce_htfAlignmentScore >= 55 and (ie1a_currentPhase == "Retracement" or ie1a_currentPhase == "Demand Return") ? "Bullish Pullback" : direction == -1 and mce_htfAlignmentScore >= 55 and (ie1a_currentPhase == "Retracement" or ie1a_currentPhase == "Supply Return") ? "Bearish Pullback" : rot_transferProbability >= 65 and direction == -1 ? "Bullish Rotation" : rot_transferProbability >= 65 and direction == 1 ? "Bearish Rotation" : rot_state == "CONTESTED" and re_resolutionState == "UNRESOLVED" ? "Range" : "No Clear Narrative"
+float ne_narrativeStrength = mce_alignmentScore * 0.40 + rot_controlStability * 0.30 + (re_resolutionState == "RESOLVED" ? 30.0 : re_resolutionState == "PARTIALLY RESOLVED" ? 15.0 : 0.0)
+
+// ── TQE ─────────────────────────────────────────────────────────────────────
+float tqe_rawScore = math.min(ie1a_phaseConfidence * 0.20 + erf_confidence * 0.15 + (frz_inProximity ? float(frz_bestScore) * 0.15 : 0.0) + mce_htfAlignmentScore * 0.20 + re_recursiveCompletionScore * 0.15 + obs_LiquidityScore * 0.15 + frz_entryBonus, 100.0)
+string tqe_grade = tqe_rawScore >= 80 ? "A+" : tqe_rawScore >= 65 ? "A" : tqe_rawScore >= 50 ? "B" : tqe_rawScore >= 35 ? "C" : "D"
+string tqe_riskLevel = rot_transferProbability > 65 or re_resolutionState == "UNRESOLVED" ? "HIGH" : rot_transferProbability > 35 or tqe_rawScore < 60 ? "MEDIUM" : "LOW"
+
+// ── DOE ─────────────────────────────────────────────────────────────────────
+string doe_bias = direction == 1 and mce_htfAlignmentScore >= 75 ? "Strong Bullish" : direction == 1 and mce_htfAlignmentScore >= 50 ? "Bullish" : direction == -1 and mce_htfAlignmentScore >= 75 ? "Strong Bearish" : direction == -1 and mce_htfAlignmentScore >= 50 ? "Bearish" : "Neutral"
+string doe_action = inv_invalidated ? "No Trade" : not erf_entryGate ? "Wait" : not te_rrGate ? "Wait" : ie1a_currentPhase == "Demand Return" and direction == 1 ? "Long" : ie1a_currentPhase == "Supply Return" and direction == -1 ? "Short" : rot_transferProbability >= 75 and ne_dominantNarrative == "Bullish Rotation" ? "Long" : rot_transferProbability >= 75 and ne_dominantNarrative == "Bearish Rotation" ? "Short" : "Wait"
+float doe_confidence = math.min(nz(modelConfidence, 50.0) * 0.40 + mce_alignmentScore * 0.25 + ie1a_phaseConfidence * 0.20 + (frz_attractorConvergence ? 15.0 : 0.0), 88.0)
+string doe_tradeType = ne_dominantNarrative == "Bullish Continuation" or ne_dominantNarrative == "Bearish Continuation" ? "Continuation" : ne_dominantNarrative == "Bullish Pullback" or ne_dominantNarrative == "Bearish Pullback" ? "Pullback" : ne_dominantNarrative == "Bullish Rotation" or ne_dominantNarrative == "Bearish Rotation" ? "Rotation" : "Wait"
+float doe_entryMid = ie1a_currentPhase == "Demand Return" and not na(point4OriginHigh) ? (point4OriginHigh + point4OriginLow) / 2.0 : ie1a_currentPhase == "Supply Return" and not na(flipTop) ? (flipTop + flipBot) / 2.0 : close
+float doe_entryHigh = doe_entryMid + atr * 0.30
+float doe_entryLow = doe_entryMid - atr * 0.30
+string doe_entryTrigger = frz_inProximity ? "Limit" : ie1a_currentPhase == "Demand Return" or ie1a_currentPhase == "Supply Return" ? "LimitOnRetest" : "Market"
 // Also shows Section 17/18 live-bar scores and Section 19 ownership tallies.
 // ════════════════════════════════════════════════════════════════════════════
 
