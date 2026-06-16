@@ -2652,66 +2652,18 @@ float inv_riskInPts = not na(inv_activeStop) ? math.abs(close - inv_activeStop) 
 float inv_riskInATR = not na(inv_riskInPts) and atr > 0 ? inv_riskInPts / atr : na
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// V72 — TARGET ENGINE (TE) — Phase 1 Early Scan
-// Scans FRZ arrays (var — persist from previous bars) for directional targets.
-// FRZ-based TP1: highest-score FRZ in trade direction, beyond current price.
-// Attractor-based TP2/TP3 computed in post-FRZ section (full recalc).
+// V72 — TARGET ENGINE (TE) — Forward Declarations
+// FRZ-based computation moved to post-FRZ section (line 5926+).
+// Var declarations persist across bars; entry signals use previous bar's values.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 var float te_tp1 = na
 var float te_tp2 = na
 var float te_tp3 = na
-
-float _te_bestScore = 0.0
-float _te_bestPrice = na
-int   _te_frzSize   = array.size(frz_topArr)
-
-if _te_frzSize > 0 and direction != 0
-    for _ti = 0 to _te_frzSize - 1
-        if _ti < array.size(frz_topArr)
-            int   _tDir  = array.get(frz_dirArr,   _ti)
-            int   _tScr  = array.get(frz_scoreArr, _ti)
-            float _tTop  = array.get(frz_topArr,   _ti)
-            float _tBot  = array.get(frz_botArr,   _ti)
-            float _tMid  = (_tTop + _tBot) / 2.0
-            string _tSt  = array.get(frz_statusArr, _ti)
-            bool  _tLive = _tSt == "Open" or _tSt == "Partial"
-            // Bull trade: target FRZ above close with direction == 1
-            // Bear trade: target FRZ below close with direction == -1
-            bool _tValid = _tLive and _tDir == direction and
-                 (direction == 1 ? _tMid > close : _tMid < close)
-            if _tValid and _tScr > _te_bestScore
-                _te_bestScore := float(_tScr)
-                _te_bestPrice := _tMid
-
-te_tp1 := not na(_te_bestPrice) ? _te_bestPrice : na
-
-// TP2 from primary attractor (directionally validated)
-te_tp2 := not na(eae_primaryAttractorPrice) and
-     (direction == 1 ? eae_primaryAttractorPrice > close :
-      direction == -1 ? eae_primaryAttractorPrice < close : false) ?
-     eae_primaryAttractorPrice : na
-
-// TP3 from secondary attractor or extension
-float _te_tertiaryPrice = not na(eae_primaryAttractorPrice) ?
-     (direction == 1 ? eae_primaryAttractorPrice + atr * 2.0 :
-      direction == -1 ? eae_primaryAttractorPrice - atr * 2.0 : na) : na
-te_tp3 := not na(_te_tertiaryPrice) and
-     (direction == 1 ? _te_tertiaryPrice > close :
-      direction == -1 ? _te_tertiaryPrice < close : false) ?
-     _te_tertiaryPrice : na
-
-// R:R calculation and gate
-float te_rr_tp1 = not na(te_tp1) and not na(inv_riskInPts) and inv_riskInPts > 0 ?
-     math.abs(te_tp1 - close) / inv_riskInPts : na
-float te_rr_tp2 = not na(te_tp2) and not na(inv_riskInPts) and inv_riskInPts > 0 ?
-     math.abs(te_tp2 - close) / inv_riskInPts : na
-float te_rr_tp3 = not na(te_tp3) and not na(inv_riskInPts) and inv_riskInPts > 0 ?
-     math.abs(te_tp3 - close) / inv_riskInPts : na
-
-bool te_rrGate = not na(te_rr_tp1) ? te_rr_tp1 >= rrMinimum :
-     (not na(te_rr_tp2) ? te_rr_tp2 >= rrMinimum : true)
-// If no TP available, do not block entry (te_rrGate defaults true)
+var float te_rr_tp1 = na
+var float te_rr_tp2 = na
+var float te_rr_tp3 = na
+var bool  te_rrGate = true   // defaults true — does not block when no TP computed yet
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // SECTION 15 — SCORING ENGINE
@@ -5985,6 +5937,59 @@ float frz_confidence = frz_activeCount > 0 ?
      float(frz_bestScore) * 0.40 +
      (frz_bestStatus == "Open" ? 30.0 : frz_bestStatus == "Partial" ? 15.0 : 0.0) +
      (frz_bestTier == "Tier 1 ★★★" ? 30.0 : frz_bestTier == "Tier 2 ★★" ? 20.0 : 10.0) : 0.0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// V72 — TARGET ENGINE (TE) — Full Computation (post-FRZ)
+// FRZ arrays now available. Compute TP1/TP2/TP3 and R:R gate.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+float _te_bestScore2 = 0.0
+float _te_bestPrice2 = na
+int   _te_frzSize2   = array.size(frz_topArr)
+
+if _te_frzSize2 > 0 and direction != 0
+    for _ti2 = 0 to _te_frzSize2 - 1
+        if _ti2 < array.size(frz_topArr)
+            int   _tDir2  = array.get(frz_dirArr,   _ti2)
+            int   _tScr2  = array.get(frz_scoreArr, _ti2)
+            float _tTop2  = array.get(frz_topArr,   _ti2)
+            float _tBot2  = array.get(frz_botArr,   _ti2)
+            float _tMid2  = (_tTop2 + _tBot2) / 2.0
+            string _tSt2  = array.get(frz_statusArr, _ti2)
+            bool  _tLive2 = _tSt2 == "Open" or _tSt2 == "Partial"
+            bool _tValid2 = _tLive2 and _tDir2 == direction and
+                 (direction == 1 ? _tMid2 > close : _tMid2 < close)
+            if _tValid2 and _tScr2 > _te_bestScore2
+                _te_bestScore2 := float(_tScr2)
+                _te_bestPrice2 := _tMid2
+
+te_tp1 := not na(_te_bestPrice2) ? _te_bestPrice2 : na
+
+// TP2 from primary attractor (directionally validated)
+te_tp2 := not na(eae_primaryAttractorPrice) and
+     (direction == 1 ? eae_primaryAttractorPrice > close :
+      direction == -1 ? eae_primaryAttractorPrice < close : false) ?
+     eae_primaryAttractorPrice : na
+
+// TP3 from extension
+float _te_tertiaryPrice2 = not na(eae_primaryAttractorPrice) ?
+     (direction == 1 ? eae_primaryAttractorPrice + atr * 2.0 :
+      direction == -1 ? eae_primaryAttractorPrice - atr * 2.0 : na) : na
+te_tp3 := not na(_te_tertiaryPrice2) and
+     (direction == 1 ? _te_tertiaryPrice2 > close :
+      direction == -1 ? _te_tertiaryPrice2 < close : false) ?
+     _te_tertiaryPrice2 : na
+
+// R:R calculation and gate
+te_rr_tp1 := not na(te_tp1) and not na(inv_riskInPts) and inv_riskInPts > 0 ?
+     math.abs(te_tp1 - close) / inv_riskInPts : na
+te_rr_tp2 := not na(te_tp2) and not na(inv_riskInPts) and inv_riskInPts > 0 ?
+     math.abs(te_tp2 - close) / inv_riskInPts : na
+te_rr_tp3 := not na(te_tp3) and not na(inv_riskInPts) and inv_riskInPts > 0 ?
+     math.abs(te_tp3 - close) / inv_riskInPts : na
+
+te_rrGate := not na(te_rr_tp1) ? te_rr_tp1 >= rrMinimum :
+     (not na(te_rr_tp2) ? te_rr_tp2 >= rrMinimum : true)
 
 // ════════════════════════════════════════════════════════════════════════════
 // SECTION 20 — FUTURE RETURN DASHBOARD  [Phase 2]
