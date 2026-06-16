@@ -235,28 +235,31 @@ mce_weightMode     = input.string("Equal", "TF Weight Mode",
 
 // ─── V72 — Rotation Intelligence Engine (RIE) ──────────────────────────────
 var string GRP_RIE  = "V72 Rotation Intelligence"
-rie_w_decay        = input.float (0.35,  "RIE: Decay Weight",                   group=GRP_RIE, minval=0.1, maxval=0.6, step=0.05)
-rie_w_absorption   = input.float (0.30,  "RIE: Absorption Weight",              group=GRP_RIE, minval=0.1, maxval=0.6, step=0.05)
-rie_w_convexity    = input.float (0.20,  "RIE: Convexity Weight",               group=GRP_RIE, minval=0.05, maxval=0.5, step=0.05)
-rie_w_liquidity    = input.float (0.15,  "RIE: Liquidity Weight",               group=GRP_RIE, minval=0.05, maxval=0.4, step=0.05)
+// RIE weights hardcoded to reduce external element count (CE10116 limit=254)
+float rie_w_decay      = 0.35
+float rie_w_absorption = 0.30
+float rie_w_convexity  = 0.20
+float rie_w_liquidity  = 0.15
 
 // ─── V72 — Trade Qualification Engine (TQE) ────────────────────────────────
 var string GRP_TQE  = "V72 Trade Qualification"
-tqe_w_ie1a         = input.float (0.167, "TQE: IE1A Weight",                    group=GRP_TQE, minval=0.05, maxval=0.5, step=0.01)
-tqe_w_erf          = input.float (0.167, "TQE: ERF Weight",                     group=GRP_TQE, minval=0.05, maxval=0.5, step=0.01)
-tqe_w_frz          = input.float (0.167, "TQE: FRZ Weight",                     group=GRP_TQE, minval=0.05, maxval=0.5, step=0.01)
-tqe_w_mce          = input.float (0.167, "TQE: MCE Weight",                     group=GRP_TQE, minval=0.05, maxval=0.5, step=0.01)
-tqe_w_re           = input.float (0.167, "TQE: RE Weight",                      group=GRP_TQE, minval=0.05, maxval=0.5, step=0.01)
-tqe_w_liq          = input.float (0.167, "TQE: Liquidity Weight",               group=GRP_TQE, minval=0.05, maxval=0.5, step=0.01)
-tqe_gradeA_plus    = input.int   (80,    "TQE: A+ Threshold",                   group=GRP_TQE, minval=60, maxval=100)
-tqe_gradeA         = input.int   (65,    "TQE: A Threshold",                    group=GRP_TQE, minval=50, maxval=95)
-tqe_gradeB         = input.int   (50,    "TQE: B Threshold",                    group=GRP_TQE, minval=35, maxval=80)
-tqe_gradeC         = input.int   (35,    "TQE: C Threshold",                    group=GRP_TQE, minval=20, maxval=65)
+// TQE weights/thresholds hardcoded to reduce external element count (CE10116)
+float tqe_w_ie1a  = 0.167
+float tqe_w_erf   = 0.167
+float tqe_w_frz   = 0.167
+float tqe_w_mce   = 0.167
+float tqe_w_re    = 0.167
+float tqe_w_liq   = 0.167
+int tqe_gradeA_plus = 80
+int tqe_gradeA      = 65
+int tqe_gradeB      = 50
+int tqe_gradeC      = 35
 
 // ─── V72 — Decision Output Engine (DOE) ────────────────────────────────────
 var string GRP_DOE  = "V72 Decision Output"
-doe_confCap        = input.int   (88,    "DOE: Confidence Cap (Normal)",         group=GRP_DOE, minval=70, maxval=100)
-doe_confCapConv    = input.int   (95,    "DOE: Confidence Cap (Convergence)",    group=GRP_DOE, minval=80, maxval=100)
+// DOE confidence caps hardcoded to reduce external element count (CE10116)
+int doe_confCap     = 88
+int doe_confCapConv = 95
 
 // ─── V72 — FRZ Integration ─────────────────────────────────────────────────
 var string GRP_FRZV72 = "V72 FRZ Integration"
