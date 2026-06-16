@@ -5874,563 +5874,56 @@ if _frzN3 > 0
                     frz_bestOwner  := _own
                     frz_bestStatus := _st
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// V72 — FRZ ↔ ERF UNIFICATION + FRZ DISTANCE + FRZ CONVERGENCE
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// FRZ best-zone index tracking (fix C1: derive top/bot/dir from arrays)
-var int frz_bestIdx = -1
-float frz_bestZoneTop = na
-float frz_bestZoneBot = na
-float frz_bestZoneMid = na
-int   frz_bestZoneDir = 0
-
-if frz_activeCount > 0 and _frzN3 > 0
-    for _fbi = 0 to _frzN3 - 1
-        if _fbi < array.size(frz_scoreArr)
-            if array.get(frz_scoreArr, _fbi) == frz_bestScore
-                string _fbSt = array.get(frz_statusArr, _fbi)
-                if _fbSt == "Open" or _fbSt == "Partial"
-                    frz_bestIdx := _fbi
-                    break
-
-if frz_bestIdx >= 0 and frz_bestIdx < array.size(frz_topArr)
-    frz_bestZoneTop := array.get(frz_topArr, frz_bestIdx)
-    frz_bestZoneBot := array.get(frz_botArr, frz_bestIdx)
-    frz_bestZoneMid := (frz_bestZoneTop + frz_bestZoneBot) / 2.0
-    frz_bestZoneDir := array.get(frz_dirArr, frz_bestIdx)
-
-// FRZ distance to zone (in ATR units)
-float frz_distanceToZone = not na(frz_bestZoneMid) ?
-     math.abs(close - frz_bestZoneMid) / math.max(atr, 1e-10) : na
-
-// FRZ resolution score (ERF linkage)
-float frz_resolutionScore =
-     re_resolutionState == "RESOLVED" ? 90.0 :
-     re_resolutionState == "PARTIALLY RESOLVED" ?
-         50.0 + re_recursiveCompletionScore * 0.40 :
-     20.0 + ede_dissipationProgress * 0.30
-
-// FRZ residual energy (inverse of resolution)
-float frz_residualEnergy = math.max(0.0, 100.0 - frz_resolutionScore)
-
-// FRZ attractor weight
-float frz_attractorWeight =
-     frz_residualEnergy * 0.50 +
-     float(frz_bestScore) * 0.30 +
-     (frz_bestStatus == "Open" ? 20.0 : frz_bestStatus == "Partial" ? 10.0 : 0.0)
-
-// FRZ-Attractor convergence (display flag only in Phase 1/2 per C7/C14)
-bool frz_attractorConvergence = frz_activeCount > 0 and
-     not na(eae_primaryAttractorPrice) and not na(frz_bestZoneMid) and
-     math.abs(eae_primaryAttractorPrice - frz_bestZoneMid) / math.max(atr, 1e-10) < frz_convergenceATR
-
-// FRZ proximity check
-bool frz_inProximity = frz_activeCount > 0 and not na(frz_bestZoneMid) and
-     math.abs(close - frz_bestZoneMid) / math.max(atr, 1e-10) < frz_proximityATR
-
-// FRZ entry bonus
-float frz_entryBonus = frz_inProximity and frz_bestZoneDir == direction ? 15.0 : 0.0
-
-// FRZ confidence score
-float frz_confidence = frz_activeCount > 0 ?
-     float(frz_bestScore) * 0.40 +
-     (frz_bestStatus == "Open" ? 30.0 : frz_bestStatus == "Partial" ? 15.0 : 0.0) +
-     (frz_bestTier == "Tier 1 ★★★" ? 30.0 : frz_bestTier == "Tier 2 ★★" ? 20.0 : 10.0) : 0.0
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// V72 — TARGET ENGINE (TE) — Full Computation (post-FRZ)
-// FRZ arrays now available. Compute TP1/TP2/TP3 and R:R gate.
-// ═══════════════════════════════════════════════════════════════════════════════
-
-float _te_bestScore2 = 0.0
-float _te_bestPrice2 = na
-int   _te_frzSize2   = array.size(frz_topArr)
-
-if _te_frzSize2 > 0 and direction != 0
-    for _ti2 = 0 to _te_frzSize2 - 1
-        if _ti2 < array.size(frz_topArr)
-            int   _tDir2  = array.get(frz_dirArr,   _ti2)
-            int   _tScr2  = array.get(frz_scoreArr, _ti2)
-            float _tTop2  = array.get(frz_topArr,   _ti2)
-            float _tBot2  = array.get(frz_botArr,   _ti2)
-            float _tMid2  = (_tTop2 + _tBot2) / 2.0
-            string _tSt2  = array.get(frz_statusArr, _ti2)
-            bool  _tLive2 = _tSt2 == "Open" or _tSt2 == "Partial"
-            bool _tValid2 = _tLive2 and _tDir2 == direction and
-                 (direction == 1 ? _tMid2 > close : _tMid2 < close)
-            if _tValid2 and _tScr2 > _te_bestScore2
-                _te_bestScore2 := float(_tScr2)
-                _te_bestPrice2 := _tMid2
-
-te_tp1 := not na(_te_bestPrice2) ? _te_bestPrice2 : na
-
-// TP2 from primary attractor (directionally validated)
-te_tp2 := not na(eae_primaryAttractorPrice) and
-     (direction == 1 ? eae_primaryAttractorPrice > close :
-      direction == -1 ? eae_primaryAttractorPrice < close : false) ?
-     eae_primaryAttractorPrice : na
-
-// TP3 from extension
-float _te_tertiaryPrice2 = not na(eae_primaryAttractorPrice) ?
-     (direction == 1 ? eae_primaryAttractorPrice + atr * 2.0 :
-      direction == -1 ? eae_primaryAttractorPrice - atr * 2.0 : na) : na
-te_tp3 := not na(_te_tertiaryPrice2) and
-     (direction == 1 ? _te_tertiaryPrice2 > close :
-      direction == -1 ? _te_tertiaryPrice2 < close : false) ?
-     _te_tertiaryPrice2 : na
-
-// R:R calculation and gate
-te_rr_tp1 := not na(te_tp1) and not na(inv_riskInPts) and inv_riskInPts > 0 ?
-     math.abs(te_tp1 - close) / inv_riskInPts : na
-te_rr_tp2 := not na(te_tp2) and not na(inv_riskInPts) and inv_riskInPts > 0 ?
-     math.abs(te_tp2 - close) / inv_riskInPts : na
-te_rr_tp3 := not na(te_tp3) and not na(inv_riskInPts) and inv_riskInPts > 0 ?
-     math.abs(te_tp3 - close) / inv_riskInPts : na
-
-te_rrGate := not na(te_rr_tp1) ? te_rr_tp1 >= rrMinimum :
-     (not na(te_rr_tp2) ? te_rr_tp2 >= rrMinimum : true)
-
-// ════════════════════════════════════════════════════════════════════════════
-// SECTION 20 — FUTURE RETURN DASHBOARD  [Phase 2]
-// "RECURSIVE FUTURE RETURN" panel — bottom_right.
-// Shows: Zone # | Owner | Score | Priority | Status
-// Max 8 zones shown (most recent / highest score first).
-// Also shows Section 17/18 live-bar scores and Section 19 ownership tallies.
-// ════════════════════════════════════════════════════════════════════════════
-
-f_frzStatusColor(string st) =>
-    st == "Open" ? color.lime : st == "Partial" ? color.yellow : st == "Mitigated" ? color.gray : color.red
-
-f_frzTierColor(string t) =>
-    t == "T1" ? #00ffcc : t == "T2" ? color.lime : t == "T3" ? color.yellow : color.orange
-
-f_frzOwnerColor(string o) =>
-    o == "L2 HTF" ? color.yellow : o == "L1 CHILD" ? color.aqua : o == "L0 PRIMARY" ? color.lime : #c084fc
-
-if showTable and showFRZ_Dashboard and barstate.islast
-
-    // ── Header row + 5 data columns: Zone | Owner | Score | Priority | Status
-    // ── Up to 8 zone rows + header + separator rows
-    int _frzRows = 20   // header(1) + sep(1) + colhdr(1) + sep(1) + up to 8 zones + owner tally(4) + live bar(2) + Sec18(1)
-    var table frz_dash = table.new(position.bottom_left, 5, _frzRows,
-         bgcolor      = color.new(#080818, 5),
-         border_color = color.new(#00ffcc, 25),
-         border_width = 1,
-         frame_color  = color.new(#00ffcc, 15),
-         frame_width  = 1)
-
-    string _ts3 = dashTextSize
-    string _szC = _ts3 == "tiny" ? size.tiny : size.small
-
-    // ── Panel header ─────────────────────────────────────────────────────────
-    table.cell(frz_dash, 0, 0, "RECURSIVE FUTURE RETURN",
-         text_color=color.white, bgcolor=color.new(#0a0a30, 0),
-         text_size=_szC, tooltip="FRZ Engine v70 — Sections 17-20")
-    table.cell(frz_dash, 1, 0, "v70",
-         text_color=color.new(#00ffcc, 30), bgcolor=color.new(#0a0a30, 0), text_size=_szC)
-    table.cell(frz_dash, 2, 0, str.tostring(frz_activeCount) + " active",
-         text_color=frz_activeCount > 0 ? color.lime : color.gray,
-         bgcolor=color.new(#0a0a30, 0), text_size=_szC)
-    table.cell(frz_dash, 3, 0, "▲" + str.tostring(frz_bullCount),
-         text_color=color.teal, bgcolor=color.new(#0a0a30, 0), text_size=_szC)
-    table.cell(frz_dash, 4, 0, "▼" + str.tostring(frz_bearCount),
-         text_color=color.red,  bgcolor=color.new(#0a0a30, 0), text_size=_szC)
-
-    // ── Column headers ────────────────────────────────────────────────────────
-    int _ch = 1
-    table.cell(frz_dash, 0, _ch, "Zone",     text_color=#00ffcc, text_size=_szC)
-    table.cell(frz_dash, 1, _ch, "Owner",    text_color=#00ffcc, text_size=_szC)
-    table.cell(frz_dash, 2, _ch, "Score",    text_color=#00ffcc, text_size=_szC)
-    table.cell(frz_dash, 3, _ch, "Priority", text_color=#00ffcc, text_size=_szC)
-    table.cell(frz_dash, 4, _ch, "Status",   text_color=#00ffcc, text_size=_szC)
-
-    // ── Zone rows (up to 8 most recent live zones, newest first) ──────────────
-    int _frzZCount = array.size(frz_scoreArr)
-    int _rowCursor = 2
-    int _zonesShown = 0
-    int _maxShow    = 8
-
-    // Iterate newest-first (highest index = most recently spawned)
-    if _frzZCount > 0
-        int _startIdx = _frzZCount - 1
-        for _zi = _startIdx to 0
-            if _zonesShown >= _maxShow
-                break
-            if _zi < array.size(frz_scoreArr) and _rowCursor < _frzRows
-                int    _zid  = array.get(frz_idxArr,    _zi)
-                string _zown = array.get(frz_ownerArr,  _zi)
-                int    _zsc  = array.get(frz_scoreArr,  _zi)
-                string _ztf  = array.get(frz_tierArr,   _zi)
-                string _zst  = array.get(frz_statusArr, _zi)
-                int    _zdir = array.get(frz_dirArr,    _zi)
-
-                // Row background: dim for terminal statuses
-                color _rowBg =
-                     _zst == "Mitigated"   ? color.new(color.gray, 95) :
-                     _zst == "Invalidated" ? color.new(color.red,  97) :
-                     _zdir == 1            ? color.new(color.teal, 97) :
-                                             color.new(color.red,  97)
-
-                // Zone ID cell (e.g. "FRZ 3")
-                table.cell(frz_dash, 0, _rowCursor,
-                     "FRZ " + str.tostring(_zid),
-                     text_color = _zdir == 1 ? color.teal : color.red,
-                     bgcolor = _rowBg, text_size = _ts3 == "tiny" ? size.tiny : size.small)
-
-                // Owner cell (e.g. "L1 CHILD")
-                // Short form for space: L0 / L1 / L2 / L3
-                string _ownShort =
-                     _zown == "L0 PRIMARY" ? "L0" :
-                     _zown == "L1 CHILD"   ? "L1" :
-                     _zown == "L2 HTF"     ? "L2" : "L3"
-                table.cell(frz_dash, 1, _rowCursor,
-                     _ownShort,
-                     text_color = f_frzOwnerColor(_zown),
-                     bgcolor = _rowBg, text_size = _ts3 == "tiny" ? size.tiny : size.small)
-
-                // Score cell
-                table.cell(frz_dash, 2, _rowCursor,
-                     str.tostring(_zsc) + "%",
-                     text_color = _zsc >= 76 ? #00ffcc : _zsc >= 51 ? color.lime : color.yellow,
-                     bgcolor = _rowBg, text_size = _ts3 == "tiny" ? size.tiny : size.small)
-
-                // Priority / Tier cell
-                table.cell(frz_dash, 3, _rowCursor,
-                     _ztf,
-                     text_color = f_frzTierColor(_ztf),
-                     bgcolor = _rowBg, text_size = _ts3 == "tiny" ? size.tiny : size.small)
-
-                // Status cell
-                table.cell(frz_dash, 4, _rowCursor,
-                     _zst,
-                     text_color = f_frzStatusColor(_zst),
-                     bgcolor = _rowBg, text_size = _ts3 == "tiny" ? size.tiny : size.small)
-
-                _rowCursor  := _rowCursor  + 1
-                _zonesShown := _zonesShown + 1
-
-    // Fill empty rows so table doesn't collapse
-    if _zonesShown == 0 and _rowCursor < _frzRows
-        table.cell(frz_dash, 0, _rowCursor, "No active FRZs",
-             text_color=color.gray, text_size=_szC)
-        table.cell(frz_dash, 1, _rowCursor, "–", text_color=color.gray, text_size=_szC)
-        table.cell(frz_dash, 2, _rowCursor, "–", text_color=color.gray, text_size=_szC)
-        table.cell(frz_dash, 3, _rowCursor, "–", text_color=color.gray, text_size=_szC)
-        table.cell(frz_dash, 4, _rowCursor, "–", text_color=color.gray, text_size=_szC)
-        _rowCursor := _rowCursor + 1
-
-    // ── Section 19 — Owner Tally ──────────────────────────────────────────────
-    if _rowCursor < _frzRows
-        table.cell(frz_dash, 0, _rowCursor, "OWNERSHIP",
-             text_color=#00ffcc, text_size=_szC)
-        table.cell(frz_dash, 1, _rowCursor, "L0:" + str.tostring(frz_ownL0),
-             text_color=color.lime, text_size=_szC)
-        table.cell(frz_dash, 2, _rowCursor, "L1:" + str.tostring(frz_ownL1),
-             text_color=color.aqua, text_size=_szC)
-        table.cell(frz_dash, 3, _rowCursor, "L2:" + str.tostring(frz_ownL2),
-             text_color=color.yellow, text_size=_szC)
-        table.cell(frz_dash, 4, _rowCursor, "L3:" + str.tostring(frz_ownL3),
-             text_color=#c084fc, text_size=_szC)
-        _rowCursor := _rowCursor + 1
-
-    // ── Section 18 — Validation status ───────────────────────────────────────
-    if _rowCursor < _frzRows
-        table.cell(frz_dash, 0, _rowCursor, "Liq-Free Val",
-             text_color=color.silver, text_size=_szC)
-        table.cell(frz_dash, 1, _rowCursor, frz_approved ? "✓ APPROVED" : "✗ REJECTED",
-             text_color=frz_approved ? color.lime : color.red, text_size=_szC)
-        table.cell(frz_dash, 2, _rowCursor, "Resting",
-             text_color=color.silver, text_size=_szC)
-        table.cell(frz_dash, 3, _rowCursor, frz_liqResting ? "YES" : "Clear",
-             text_color=frz_liqResting ? color.orange : color.lime, text_size=_szC)
-        table.cell(frz_dash, 4, _rowCursor, "",
-             text_color=color.gray, text_size=_szC)
-        _rowCursor := _rowCursor + 1
-
-    // ── Live bar score row ────────────────────────────────────────────────────
-    if _rowCursor < _frzRows
-        table.cell(frz_dash, 0, _rowCursor, "Live Score",
-             text_color=color.silver, text_size=_szC)
-        table.cell(frz_dash, 1, _rowCursor,
-             str.tostring(frz_rawScore) + "% " + frz_class,
-             text_color = frz_rawScore >= 76 ? #00ffcc :
-                          frz_rawScore >= 51 ? color.lime :
-                          frz_rawScore >= 26 ? color.yellow : color.gray,
-             text_size=_szC)
-        table.cell(frz_dash, 2, _rowCursor, frz_tierFull,
-             text_color=frz_tier == "T1" ? #00ffcc : frz_tier == "T2" ? color.lime :
-                        frz_tier == "T3" ? color.yellow : color.gray, text_size=_szC)
-        table.cell(frz_dash, 3, _rowCursor, frz_compStr,
-             text_color=color.white, text_size=_szC)
-        table.cell(frz_dash, 4, _rowCursor, frz_ownerLayer,
-             text_color=f_frzOwnerColor(frz_ownerLayer), text_size=_szC)
-
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// V72 — MCE ALIGNMENT COMPUTATION (4-level)
-// Uses request.security data from tf1-tf4 to produce consensus scores.
-// Lifecycle progress map is DISPLAY-ONLY heuristic — never fed to physics.
+// V72 — PERSISTENT STATE + FUNCTION DEFINITIONS
 // ═══════════════════════════════════════════════════════════════════════════════
-
-// Per-TF direction (already computed in S3)
-int mce_dir1 = dir_tf1
-int mce_dir2 = dir_tf2
-int mce_dir3 = dir_tf3
-int mce_dir4 = dir_tf4
-
-// Alignment score: % of 4 TFs agreeing with L0 direction
-int _mce_agree = (mce_dir1 == direction ? 1 : 0) +
-     (mce_dir2 == direction ? 1 : 0) +
-     (mce_dir3 == direction ? 1 : 0) +
-     (mce_dir4 == direction ? 1 : 0)
-float mce_alignmentScore = direction != 0 ? float(_mce_agree) / 4.0 * 100.0 : 50.0
-
-// HTF alignment (tf3 H4 + tf4 Daily — top 2)
-float mce_htfAlignmentScore = mce_weightMode == "HTF-Biased" ?
-     (mce_dir4 == direction ? 50.0 : mce_dir4 == 0 ? 25.0 : 0.0) +
-     (mce_dir3 == direction ? 30.0 : mce_dir3 == 0 ? 15.0 : 0.0) +
-     (mce_dir2 == direction ? 20.0 : mce_dir2 == 0 ? 10.0 : 0.0) :
-     mce_alignmentScore
-
-// Exec alignment (tf1 + tf2 — execution timeframes)
-float mce_execAlignmentScore =
-     (mce_dir1 == direction ? 50.0 : mce_dir1 == 0 ? 25.0 : 0.0) +
-     (mce_dir2 == direction ? 50.0 : mce_dir2 == 0 ? 25.0 : 0.0)
-
-// MCE alignment summaries (not "narratives" per C8 — these are alignment summaries)
-string mce_htfAlignmentSummary =
-     mce_htfAlignmentScore >= 80 and direction == 1 ? "HTF Bullish Continuation" :
-     mce_htfAlignmentScore >= 80 and direction == -1 ? "HTF Bearish Continuation" :
-     mce_htfAlignmentScore >= 60 and rot_transferProbability < 40 ? "HTF Trend Intact" :
-     mce_htfAlignmentScore < 40 ? "HTF Contested — No Clear Bias" :
-     mce_htfAlignmentScore >= 50 and rot_transferProbability >= 60 ? "HTF Rotation Developing" :
-     "HTF Developing"
-
-string mce_execAlignmentSummary =
-     ie1a_currentPhase == "Demand Return" and mce_execAlignmentScore >= 60 ? "Exec Aligned — Long Window" :
-     ie1a_currentPhase == "Supply Return" and mce_execAlignmentScore >= 60 ? "Exec Aligned — Short Window" :
-     mce_execAlignmentScore < 40 ? "Exec Conflict — Wait" : "Exec Developing"
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// V72 — NARRATIVE ENGINE (NE)
-// Single dominant market narrative. Exactly one active at any time.
-// Authority: ne_dominantNarrative, ne_narrativeStrength, ne_narrativeConflict
-// Fix C3: Demand Return → "Bullish Pullback", Supply Return → "Bearish Pullback"
-// ═══════════════════════════════════════════════════════════════════════════════
-
-var int ne_narrativeAge = 0
+var int    frz_bestIdx      = -1
+var int    ne_narrativeAge  = 0
 var string ne_prevNarrative = "No Clear Narrative"
-
-// Narrative conditions (priority ordered)
-bool _ne_bullCont = direction == 1 and mce_htfAlignmentScore >= 70 and
-     (ie1a_currentPhase == "Expansion" or ie1a_currentPhase == "New High") and
-     rot_transferProbability < 40
-
-bool _ne_bearCont = direction == -1 and mce_htfAlignmentScore >= 70 and
-     (ie1a_currentPhase == "Expansion" or ie1a_currentPhase == "New Low") and
-     rot_transferProbability < 40
-
-bool _ne_bullPullback = direction == 1 and mce_htfAlignmentScore >= 55 and
-     (ie1a_currentPhase == "Retracement" or ie1a_currentPhase == "Retracement Pre-Convexity" or
-      ie1a_currentPhase == "Retracement Induction" or ie1a_currentPhase == "Retracement Liquidity" or
-      ie1a_currentPhase == "Demand Return")
-
-bool _ne_bearPullback = direction == -1 and mce_htfAlignmentScore >= 55 and
-     (ie1a_currentPhase == "Retracement" or ie1a_currentPhase == "Retracement Pre-Convexity" or
-      ie1a_currentPhase == "Retracement Induction" or ie1a_currentPhase == "Retracement Liquidity" or
-      ie1a_currentPhase == "Supply Return")
-
-bool _ne_bullRotation = rot_transferProbability >= 65 and direction == -1 and
-     mce_htfAlignmentScore >= 50
-
-bool _ne_bearRotation = rot_transferProbability >= 65 and direction == 1 and
-     mce_htfAlignmentScore < 50
-
-bool _ne_range = rot_state == "CONTESTED" and
-     math.abs(mce_alignmentScore - 50.0) < 15.0 and
-     re_resolutionState == "UNRESOLVED"
-
-// Assign dominant narrative
-string ne_dominantNarrative =
-     _ne_bullCont ? "Bullish Continuation" :
-     _ne_bearCont ? "Bearish Continuation" :
-     _ne_bullPullback ? "Bullish Pullback" :
-     _ne_bearPullback ? "Bearish Pullback" :
-     _ne_bullRotation ? "Bullish Rotation" :
-     _ne_bearRotation ? "Bearish Rotation" :
-     _ne_range ? "Range Development" : "No Clear Narrative"
-
-// Narrative strength
-float ne_narrativeStrength =
-     mce_alignmentScore * 0.40 +
-     rot_controlStability * 0.30 +
-     (re_resolutionState == "RESOLVED" ? 30.0 :
-      re_resolutionState == "PARTIALLY RESOLVED" ? 15.0 : 0.0)
-
-// Narrative conflict detection
-float _ne_scores_bull = (_ne_bullCont ? ne_narrativeStrength : 0.0) +
-     (_ne_bullPullback ? ne_narrativeStrength * 0.8 : 0.0) +
-     (_ne_bullRotation ? ne_narrativeStrength * 0.7 : 0.0)
-float _ne_scores_bear = (_ne_bearCont ? ne_narrativeStrength : 0.0) +
-     (_ne_bearPullback ? ne_narrativeStrength * 0.8 : 0.0) +
-     (_ne_bearRotation ? ne_narrativeStrength * 0.7 : 0.0)
-bool ne_narrativeConflict = math.abs(_ne_scores_bull - _ne_scores_bear) < 10.0 and
-     _ne_scores_bull > 20.0 and _ne_scores_bear > 20.0
-
-// Age counter
-ne_narrativeAge := ne_dominantNarrative == ne_prevNarrative ? ne_narrativeAge + 1 : 0
-ne_prevNarrative := ne_dominantNarrative
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// V72 — TRADE QUALIFICATION ENGINE (TQE)
-// Unified gate and scoring layer. All weights as tunable inputs.
-// Grade is DISPLAY LABEL ONLY until calibrated (does NOT gate DOE action per C6).
-// Fix C4: Reduced IE1A direct weight overlap with erf_confidence.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// TQE FRZ quality sub-score
-float tqe_frzQuality = frz_activeCount > 0 ?
-     math.min(
-         float(frz_bestScore) * 0.50 +
-         (frz_bestTier == "Tier 1 ★★★" ? 40.0 : frz_bestTier == "Tier 2 ★★" ? 25.0 :
-          frz_bestTier == "Tier 3 ★" ? 10.0 : 0.0) +
-         (frz_bestStatus == "Open" ? 10.0 : frz_bestStatus == "Partial" ? 5.0 : 0.0),
-         100.0) : 0.0
+f_v72FindBestIdx(int _bestScore, int _arrSize) =>
+    int _r = -1
+    if _arrSize > 0
+        for _i = 0 to _arrSize - 1
+            if _i < array.size(frz_scoreArr) and array.get(frz_scoreArr, _i) == _bestScore
+                string _st = array.get(frz_statusArr, _i)
+                if _st == "Open" or _st == "Partial"
+                    _r := _i
+                    break
+    _r
 
-// TQE liquidity quality sub-score
-float tqe_liqQuality = math.min(
-     obs_LiquidityScore * 0.50 +
-     (liqSweepBull or liqSweepBear ? 30.0 : 0.0) +
-     (liqVacuum ? 20.0 : 0.0),
-     100.0)
+f_v72ScanTE(int _dir) =>
+    float _bp = na
+    float _bs = 0.0
+    int _sz = array.size(frz_topArr)
+    if _sz > 0 and _dir != 0
+        for _i = 0 to _sz - 1
+            if _i < _sz
+                int _d = array.get(frz_dirArr, _i)
+                int _s = array.get(frz_scoreArr, _i)
+                float _m = (array.get(frz_topArr, _i) + array.get(frz_botArr, _i)) / 2.0
+                string _x = array.get(frz_statusArr, _i)
+                bool _ok = (_x == "Open" or _x == "Partial") and _d == _dir and (_dir == 1 ? _m > close : _m < close)
+                if _ok and _s > _bs
+                    _bs := float(_s)
+                    _bp := _m
+    _bp
 
-// TQE raw score (all weights from inputs, equal-weight default)
-float tqe_rawScore = math.min(
-     ie1a_phaseConfidence * tqe_w_ie1a +
-     erf_confidence * tqe_w_erf +
-     tqe_frzQuality * tqe_w_frz +
-     mce_htfAlignmentScore * tqe_w_mce +
-     re_recursiveCompletionScore * tqe_w_re +
-     tqe_liqQuality * tqe_w_liq +
-     frz_entryBonus,
-     100.0)
+f_v72WrEvict() =>
+    if array.size(wr_waveId) > 50
+        array.shift(wr_waveId)
+        array.shift(wr_parentWaveId)
+        array.shift(wr_rootWaveId)
+        array.shift(wr_birthBar)
+        array.shift(wr_deathBar)
+        array.shift(wr_spawnPhase)
+        array.shift(wr_deathPhase)
+        array.shift(wr_depth)
 
-// TQE grade assignment (provisional — display only)
-string tqe_grade =
-     tqe_rawScore >= tqe_gradeA_plus ? "A+" :
-     tqe_rawScore >= tqe_gradeA ? "A" :
-     tqe_rawScore >= tqe_gradeB ? "B" :
-     tqe_rawScore >= tqe_gradeC ? "C" : "D"
-
-// TQE readiness gate (structural conditions only)
-bool tqe_readiness =
-     ie1a_phaseConfidence >= 50.0 and
-     mce_htfAlignmentScore >= 50.0 and
-     erf_confidence >= 40.0 and
-     tqe_grade != "D"
-
-// TQE risk level
-string tqe_riskLevel =
-     rot_transferProbability > 65 or re_resolutionState == "UNRESOLVED" ? "HIGH" :
-     rot_transferProbability > 35 or tqe_rawScore < 60 ? "MEDIUM" : "LOW"
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// V72 — DECISION OUTPUT ENGINE (DOE)
-// Sole authority on trader recommendation. Resolves 3-directive conflict.
-// Phase 1: structural gates only (no TQE grade dependency per C6).
-// Uses modelConfidence as primary confidence source until calibrated.
-// Fix C1: frz_bestZoneTop/Bot from array index lookup (not non-existent vars).
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// DOE Bias
-string doe_bias =
-     direction == 1 and mce_htfAlignmentScore >= 75 and rot_controlStability >= 65 ?
-         "Strong Bullish" :
-     direction == 1 and mce_htfAlignmentScore >= 50 ? "Bullish" :
-     direction == -1 and mce_htfAlignmentScore >= 75 and rot_controlStability >= 65 ?
-         "Strong Bearish" :
-     direction == -1 and mce_htfAlignmentScore >= 50 ? "Bearish" : "Neutral"
-
-// DOE Action (structural gates — TQE grade NOT used as gate per C6)
-string doe_action =
-     inv_invalidated ? "No Trade" :
-     not erf_entryGate ? "Wait" :
-     not te_rrGate ? "Wait" :
-     ie1a_currentPhase == "Demand Return" and direction == 1 ? "Long" :
-     ie1a_currentPhase == "Supply Return" and direction == -1 ? "Short" :
-     rot_transferProbability >= 75 and ne_dominantNarrative == "Bullish Rotation" ? "Long" :
-     rot_transferProbability >= 75 and ne_dominantNarrative == "Bearish Rotation" ? "Short" :
-     "Wait"
-
-// DOE Confidence (uses modelConfidence as base per Readiness Report)
-float doe_confidence = math.min(
-     nz(modelConfidence, 50.0) * 0.40 +
-     mce_alignmentScore * 0.25 +
-     (frz_attractorConvergence ? 20.0 : tqe_frzQuality * 0.15) +
-     ie1a_phaseConfidence * 0.20,
-     frz_attractorConvergence ? float(doe_confCapConv) : float(doe_confCap))
-
-// DOE Trade Type
-string doe_tradeType =
-     ne_dominantNarrative == "Bullish Continuation" or ne_dominantNarrative == "Bearish Continuation" ?
-         "Continuation" :
-     ne_dominantNarrative == "Bullish Pullback" or ne_dominantNarrative == "Bearish Pullback" ?
-         "Pullback" :
-     ne_dominantNarrative == "Bullish Rotation" or ne_dominantNarrative == "Bearish Rotation" ?
-         "Rotation" :
-     ne_dominantNarrative == "Range Development" ? "Range" :
-     ie1a_currentPhase == "New High" or ie1a_currentPhase == "New Low" ? "Breakout" : "Wait"
-
-// DOE Entry Zone (fix C1: uses frz_bestZoneTop/Bot from index lookup)
-float doe_entryMid =
-     frz_inProximity and frz_bestZoneDir == direction and not na(frz_bestZoneTop) ?
-         (frz_bestZoneTop + frz_bestZoneBot) / 2.0 :
-     ie1a_currentPhase == "Demand Return" and not na(point4OriginHigh) ?
-         (point4OriginHigh + point4OriginLow) / 2.0 :
-     ie1a_currentPhase == "Supply Return" and not na(flipTop) ?
-         (flipTop + flipBot) / 2.0 : close
-
-float doe_entryHigh = doe_entryMid + atr * 0.30
-float doe_entryLow  = doe_entryMid - atr * 0.30
-
-// DOE Entry Trigger
-string doe_entryTrigger =
-     frz_inProximity ? "Limit" :
-     ie1a_currentPhase == "Demand Return" or ie1a_currentPhase == "Supply Return" ?
-         "LimitOnRetest" : "Market"
-
-// DOE Entry Quality (= TQE grade — display only, not action gate)
-string doe_entryQuality = tqe_grade
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// V72 — DELIVERY WAVE REGISTRY (DWR)
-// Spawn when ede_state transitions to 4 (Liquidity) or 5 (Delivering).
-// Tracks delivery wave lineage. Max 20 entries with rolling eviction.
-// ═══════════════════════════════════════════════════════════════════════════════
-
-bool dwr_shouldSpawn =
-     (ede_state == 4 and ede_state[1] != 4) or
-     (ede_state == 5 and ede_state[1] != 5)
-
-if dwr_shouldSpawn and direction != 0
-    int _dwr_newId = dwr_nextId
-    dwr_nextId := dwr_nextId + 1
-    array.push(dwr_waveId,       _dwr_newId)
-    array.push(dwr_parentWaveId, dwr_activeDeliveryId)
-    array.push(dwr_rootWaveId,   wr_activeRootId)
-    array.push(dwr_startBar,     bar_index)
-    array.push(dwr_endBar,       -1)
-    array.push(dwr_energy,       ede_expansionEnergy)
-    array.push(dwr_resState,     re_resolutionState)
-    array.push(dwr_entryCycle,   entryCycle)
-    array.push(dwr_lineage,      str.tostring(wr_activeRootId) + "→" + str.tostring(_dwr_newId))
-    dwr_activeDeliveryId := _dwr_newId
+f_v72DwrEvict() =>
     if array.size(dwr_waveId) > 20
         array.shift(dwr_waveId)
         array.shift(dwr_parentWaveId)
@@ -6442,219 +5935,160 @@ if dwr_shouldSpawn and direction != 0
         array.shift(dwr_entryCycle)
         array.shift(dwr_lineage)
 
-// DWR resolution tracking (per bar update for active delivery)
+
+f_v72CmdDash(string _a, string _b, string _n, bool _nc, float _c, string _tt,
+             float _el, float _eh, string _tr, string _g, string _rl,
+             float _t1, float _t2, float _st, float _rr,
+             string _ph, float _pc, float _er, float _fd,
+             string _rs, float _rp, float _mh, string _hs,
+             bool _adv, string _ts, string _tc) =>
+    var table cd = table.new(position.middle_right, 2, 24, bgcolor=color.new(#050520, 5), border_color=color.new(#00ccff, 30), border_width=1, frame_color=color.new(#00ccff, 15), frame_width=1)
+    string _z = dashTextSize == "tiny" ? size.tiny : size.small
+    int _r = 0
+    table.cell(cd, 0, _r, "V72 CMD", text_color=#00ccff, bgcolor=color.new(#0a0a40, 0), text_size=_z)
+    table.cell(cd, 1, _r, _a, text_color=_a == "Long" ? #00ff88 : _a == "Short" ? #ff1744 : color.gray, bgcolor=color.new(#0a0a40, 0), text_size=_z)
+    _r += 1
+    table.cell(cd, 0, _r, "Bias", text_color=color.gray, text_size=_z)
+    table.cell(cd, 1, _r, _b, text_color=_b == "Strong Bullish" or _b == "Bullish" ? color.lime : _b == "Strong Bearish" or _b == "Bearish" ? color.red : color.gray, text_size=_z)
+    _r += 1
+    table.cell(cd, 0, _r, "Narr", text_color=color.gray, text_size=_z)
+    table.cell(cd, 1, _r, _n, text_color=_nc ? color.yellow : color.white, text_size=_z)
+    _r += 1
+    table.cell(cd, 0, _r, "Conf", text_color=color.gray, text_size=_z)
+    table.cell(cd, 1, _r, str.tostring(math.round(_c)) + "%", text_color=_c >= 70 ? color.lime : _c >= 50 ? color.yellow : color.red, text_size=_z)
+    _r += 1
+    table.cell(cd, 0, _r, "Type", text_color=color.gray, text_size=_z)
+    table.cell(cd, 1, _r, _tt, text_color=color.white, text_size=_z)
+    _r += 1
+    table.cell(cd, 0, _r, "Entry", text_color=color.gray, text_size=_z)
+    table.cell(cd, 1, _r, str.tostring(math.round(_el, 2)) + "-" + str.tostring(math.round(_eh, 2)), text_color=color.aqua, text_size=_z)
+    _r += 1
+    table.cell(cd, 0, _r, "Grade", text_color=color.gray, text_size=_z)
+    table.cell(cd, 1, _r, _g, text_color=_g == "A+" ? #00ff88 : _g == "A" ? color.lime : _g == "B" ? color.yellow : color.orange, text_size=_z)
+    _r += 1
+    table.cell(cd, 0, _r, "Risk", text_color=color.gray, text_size=_z)
+    table.cell(cd, 1, _r, _rl, text_color=_rl == "HIGH" ? color.red : _rl == "MEDIUM" ? color.yellow : color.lime, text_size=_z)
+    _r += 1
+    table.cell(cd, 0, _r, "TP1", text_color=color.gray, text_size=_z)
+    table.cell(cd, 1, _r, not na(_t1) ? str.tostring(math.round(_t1, 2)) : "—", text_color=color.lime, text_size=_z)
+    _r += 1
+    table.cell(cd, 0, _r, "TP2", text_color=color.gray, text_size=_z)
+    table.cell(cd, 1, _r, not na(_t2) ? str.tostring(math.round(_t2, 2)) : "—", text_color=color.lime, text_size=_z)
+    _r += 1
+    table.cell(cd, 0, _r, "Stop", text_color=color.gray, text_size=_z)
+    table.cell(cd, 1, _r, not na(_st) ? str.tostring(math.round(_st, 2)) : "—", text_color=color.red, text_size=_z)
+    _r += 1
+    table.cell(cd, 0, _r, "R:R", text_color=color.gray, text_size=_z)
+    table.cell(cd, 1, _r, not na(_rr) ? str.tostring(math.round(_rr, 1)) + ":1" : "—", text_color=_rr >= 2 ? color.lime : _rr >= 1.5 ? color.yellow : color.red, text_size=_z)
+    _r += 1
+    table.cell(cd, 0, _r, "Phase", text_color=color.gray, text_size=_z)
+    table.cell(cd, 1, _r, _ph + " " + str.tostring(math.round(_pc)) + "%", text_color=color.white, text_size=_z)
+    _r += 1
+    table.cell(cd, 0, _r, "ERF", text_color=color.gray, text_size=_z)
+    table.cell(cd, 1, _r, str.tostring(math.round(_er)) + "%", text_color=_er >= 60 ? color.lime : _er >= 45 ? color.yellow : color.red, text_size=_z)
+    _r += 1
+    table.cell(cd, 0, _r, "FRZ", text_color=color.gray, text_size=_z)
+    table.cell(cd, 1, _r, not na(_fd) ? str.tostring(math.round(_fd, 1)) + "ATR" : "—", text_color=not na(_fd) and _fd < 1 ? color.lime : color.gray, text_size=_z)
+    _r += 1
+    table.cell(cd, 0, _r, "Rot", text_color=color.gray, text_size=_z)
+    table.cell(cd, 1, _r, _rs + " " + str.tostring(math.round(_rp)) + "%", text_color=_rp >= 75 ? color.red : _rp >= 50 ? color.orange : color.lime, text_size=_z)
+    _r += 1
+    table.cell(cd, 0, _r, "HTF", text_color=color.gray, text_size=_z)
+    table.cell(cd, 1, _r, _hs, text_color=_mh >= 70 ? color.lime : _mh >= 50 ? color.yellow : color.red, text_size=_z)
+    _r += 1
+    if _adv
+        table.cell(cd, 0, _r, "Src", text_color=color.gray, text_size=_z)
+        table.cell(cd, 1, _r, _ts, text_color=color.white, text_size=_z)
+        _r += 1
+        table.cell(cd, 0, _r, "Scr", text_color=color.gray, text_size=_z)
+        table.cell(cd, 1, _r, _tc, text_color=color.white, text_size=_z)
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// V72 — MAIN BODY (correct dependency order, minimal scope count)
+// Order: FRZ↔ERF → TE → MCE → NE → TQE → DOE → DWR → Trace → Dashboard
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── 1. FRZ↔ERF Unification ──────────────────────────────────────────────────
+frz_bestIdx := f_v72FindBestIdx(frz_bestScore, _frzN3)
+float frz_bestZoneTop = frz_bestIdx >= 0 and frz_bestIdx < array.size(frz_topArr) ? array.get(frz_topArr, frz_bestIdx) : na
+float frz_bestZoneBot = frz_bestIdx >= 0 and frz_bestIdx < array.size(frz_botArr) ? array.get(frz_botArr, frz_bestIdx) : na
+float frz_bestZoneMid = not na(frz_bestZoneTop) ? (frz_bestZoneTop + frz_bestZoneBot) / 2.0 : na
+int   frz_bestZoneDir = frz_bestIdx >= 0 and frz_bestIdx < array.size(frz_dirArr) ? array.get(frz_dirArr, frz_bestIdx) : 0
+float frz_distanceToZone = not na(frz_bestZoneMid) ? math.abs(close - frz_bestZoneMid) / math.max(atr, 1e-10) : na
+float frz_residualEnergy = math.max(0.0, 100.0 - (re_resolutionState == "RESOLVED" ? 90.0 : re_resolutionState == "PARTIALLY RESOLVED" ? 50.0 + re_recursiveCompletionScore * 0.40 : 20.0 + ede_dissipationProgress * 0.30))
+bool frz_attractorConvergence = frz_activeCount > 0 and not na(eae_primaryAttractorPrice) and not na(frz_bestZoneMid) and math.abs(eae_primaryAttractorPrice - frz_bestZoneMid) / math.max(atr, 1e-10) < frz_convergenceATR
+bool frz_inProximity = frz_activeCount > 0 and not na(frz_bestZoneMid) and math.abs(close - frz_bestZoneMid) / math.max(atr, 1e-10) < frz_proximityATR
+float frz_entryBonus = frz_inProximity and frz_bestZoneDir == direction ? 15.0 : 0.0
+
+// ── 2. Target Engine ─────────────────────────────────────────────────────────
+te_tp1 := nz(f_v72ScanTE(direction), na)
+te_tp2 := not na(eae_primaryAttractorPrice) and (direction == 1 ? eae_primaryAttractorPrice > close : direction == -1 ? eae_primaryAttractorPrice < close : false) ? eae_primaryAttractorPrice : na
+te_tp3 := not na(eae_primaryAttractorPrice) ? (direction == 1 ? eae_primaryAttractorPrice + atr * 2.0 : direction == -1 ? eae_primaryAttractorPrice - atr * 2.0 : na) : na
+te_rr_tp1 := not na(te_tp1) and not na(inv_riskInPts) and inv_riskInPts > 0 ? math.abs(te_tp1 - close) / inv_riskInPts : na
+te_rr_tp2 := not na(te_tp2) and not na(inv_riskInPts) and inv_riskInPts > 0 ? math.abs(te_tp2 - close) / inv_riskInPts : na
+te_rr_tp3 := not na(te_tp3) and not na(inv_riskInPts) and inv_riskInPts > 0 ? math.abs(te_tp3 - close) / inv_riskInPts : na
+te_rrGate := not na(te_rr_tp1) ? te_rr_tp1 >= rrMinimum : (not na(te_rr_tp2) ? te_rr_tp2 >= rrMinimum : true)
+
+// ── 3. MCE Alignment ─────────────────────────────────────────────────────────
+int _mce_ag = (dir_tf1 == direction ? 1 : 0) + (dir_tf2 == direction ? 1 : 0) + (dir_tf3 == direction ? 1 : 0) + (dir_tf4 == direction ? 1 : 0)
+float mce_alignmentScore = direction != 0 ? float(_mce_ag) / 4.0 * 100.0 : 50.0
+float mce_htfAlignmentScore = mce_weightMode == "HTF-Biased" ? (dir_tf4 == direction ? 50.0 : dir_tf4 == 0 ? 25.0 : 0.0) + (dir_tf3 == direction ? 30.0 : dir_tf3 == 0 ? 15.0 : 0.0) + (dir_tf2 == direction ? 20.0 : dir_tf2 == 0 ? 10.0 : 0.0) : mce_alignmentScore
+string mce_htfAlignmentSummary = mce_htfAlignmentScore >= 80 and direction == 1 ? "HTF Bull" : mce_htfAlignmentScore >= 80 and direction == -1 ? "HTF Bear" : mce_htfAlignmentScore >= 60 and rot_transferProbability < 40 ? "HTF Intact" : mce_htfAlignmentScore < 40 ? "HTF Contest" : "HTF Dev"
+
+// ── 4. Narrative Engine ──────────────────────────────────────────────────────
+string ne_dominantNarrative = direction == 1 and mce_htfAlignmentScore >= 70 and (ie1a_currentPhase == "Expansion" or ie1a_currentPhase == "New High") and rot_transferProbability < 40 ? "Bullish Continuation" : direction == -1 and mce_htfAlignmentScore >= 70 and (ie1a_currentPhase == "Expansion" or ie1a_currentPhase == "New Low") and rot_transferProbability < 40 ? "Bearish Continuation" : direction == 1 and mce_htfAlignmentScore >= 55 and (ie1a_currentPhase == "Retracement" or ie1a_currentPhase == "Demand Return") ? "Bullish Pullback" : direction == -1 and mce_htfAlignmentScore >= 55 and (ie1a_currentPhase == "Retracement" or ie1a_currentPhase == "Supply Return") ? "Bearish Pullback" : rot_transferProbability >= 65 and direction == -1 ? "Bullish Rotation" : rot_transferProbability >= 65 and direction == 1 and mce_htfAlignmentScore < 50 ? "Bearish Rotation" : rot_state == "CONTESTED" and re_resolutionState == "UNRESOLVED" ? "Range Development" : "No Clear Narrative"
+float ne_narrativeStrength = mce_alignmentScore * 0.40 + rot_controlStability * 0.30 + (re_resolutionState == "RESOLVED" ? 30.0 : re_resolutionState == "PARTIALLY RESOLVED" ? 15.0 : 0.0)
+bool ne_narrativeConflict = ne_narrativeStrength < 40.0 and rot_transferProbability > 40
+ne_narrativeAge := ne_dominantNarrative == ne_prevNarrative ? ne_narrativeAge + 1 : 0
+ne_prevNarrative := ne_dominantNarrative
+
+// ── 5. TQE ───────────────────────────────────────────────────────────────────
+float tqe_frzQuality = frz_activeCount > 0 ? math.min(float(frz_bestScore) * 0.50 + (frz_bestTier == "Tier 1 ★★★" ? 40.0 : frz_bestTier == "Tier 2 ★★" ? 25.0 : 10.0) + (frz_bestStatus == "Open" ? 10.0 : 5.0), 100.0) : 0.0
+float tqe_liqQuality = math.min(obs_LiquidityScore * 0.50 + (liqSweepBull or liqSweepBear ? 30.0 : 0.0) + (liqVacuum ? 20.0 : 0.0), 100.0)
+float tqe_rawScore = math.min(ie1a_phaseConfidence * tqe_w_ie1a + erf_confidence * tqe_w_erf + tqe_frzQuality * tqe_w_frz + mce_htfAlignmentScore * tqe_w_mce + re_recursiveCompletionScore * tqe_w_re + tqe_liqQuality * tqe_w_liq + frz_entryBonus, 100.0)
+string tqe_grade = tqe_rawScore >= tqe_gradeA_plus ? "A+" : tqe_rawScore >= tqe_gradeA ? "A" : tqe_rawScore >= tqe_gradeB ? "B" : tqe_rawScore >= tqe_gradeC ? "C" : "D"
+string tqe_riskLevel = rot_transferProbability > 65 or re_resolutionState == "UNRESOLVED" ? "HIGH" : rot_transferProbability > 35 or tqe_rawScore < 60 ? "MEDIUM" : "LOW"
+
+// ── 6. DOE ───────────────────────────────────────────────────────────────────
+string doe_bias = direction == 1 and mce_htfAlignmentScore >= 75 and rot_controlStability >= 65 ? "Strong Bullish" : direction == 1 and mce_htfAlignmentScore >= 50 ? "Bullish" : direction == -1 and mce_htfAlignmentScore >= 75 and rot_controlStability >= 65 ? "Strong Bearish" : direction == -1 and mce_htfAlignmentScore >= 50 ? "Bearish" : "Neutral"
+string doe_action = inv_invalidated ? "No Trade" : not erf_entryGate ? "Wait" : not te_rrGate ? "Wait" : ie1a_currentPhase == "Demand Return" and direction == 1 ? "Long" : ie1a_currentPhase == "Supply Return" and direction == -1 ? "Short" : rot_transferProbability >= 75 and ne_dominantNarrative == "Bullish Rotation" ? "Long" : rot_transferProbability >= 75 and ne_dominantNarrative == "Bearish Rotation" ? "Short" : "Wait"
+float doe_confidence = math.min(nz(modelConfidence, 50.0) * 0.40 + mce_alignmentScore * 0.25 + (frz_attractorConvergence ? 20.0 : tqe_frzQuality * 0.15) + ie1a_phaseConfidence * 0.20, frz_attractorConvergence ? float(doe_confCapConv) : float(doe_confCap))
+string doe_tradeType = ne_dominantNarrative == "Bullish Continuation" or ne_dominantNarrative == "Bearish Continuation" ? "Continuation" : ne_dominantNarrative == "Bullish Pullback" or ne_dominantNarrative == "Bearish Pullback" ? "Pullback" : ne_dominantNarrative == "Bullish Rotation" or ne_dominantNarrative == "Bearish Rotation" ? "Rotation" : "Wait"
+float doe_entryMid = frz_inProximity and frz_bestZoneDir == direction and not na(frz_bestZoneTop) ? (frz_bestZoneTop + frz_bestZoneBot) / 2.0 : ie1a_currentPhase == "Demand Return" and not na(point4OriginHigh) ? (point4OriginHigh + point4OriginLow) / 2.0 : close
+float doe_entryHigh = doe_entryMid + atr * 0.30
+float doe_entryLow = doe_entryMid - atr * 0.30
+string doe_entryTrigger = frz_inProximity ? "Limit" : ie1a_currentPhase == "Demand Return" or ie1a_currentPhase == "Supply Return" ? "LimitOnRetest" : "Market"
+
+
+// ── 7. DWR ───────────────────────────────────────────────────────────────────
+bool dwr_shouldSpawn = (ede_state == 4 and ede_state[1] != 4) or (ede_state == 5 and ede_state[1] != 5)
+if dwr_shouldSpawn and direction != 0
+    int _did = dwr_nextId
+    dwr_nextId := dwr_nextId + 1
+    array.push(dwr_waveId, _did)
+    array.push(dwr_parentWaveId, dwr_activeDeliveryId)
+    array.push(dwr_rootWaveId, wr_activeRootId)
+    array.push(dwr_startBar, bar_index)
+    array.push(dwr_endBar, -1)
+    array.push(dwr_energy, ede_expansionEnergy)
+    array.push(dwr_resState, re_resolutionState)
+    array.push(dwr_entryCycle, entryCycle)
+    array.push(dwr_lineage, str.tostring(wr_activeRootId) + ">" + str.tostring(_did))
+    dwr_activeDeliveryId := _did
+    f_v72DwrEvict()
+
 if dwr_activeDeliveryId > 0 and array.size(dwr_waveId) > 0
-    int _dwr_idx = array.indexof(dwr_waveId, dwr_activeDeliveryId)
-    if _dwr_idx >= 0
-        array.set(dwr_resState, _dwr_idx, re_resolutionState)
+    int _di = array.indexof(dwr_waveId, dwr_activeDeliveryId)
+    if _di >= 0
+        array.set(dwr_resState, _di, re_resolutionState)
         if re_resolutionState == "RESOLVED"
-            array.set(dwr_endBar, _dwr_idx, bar_index)
+            array.set(dwr_endBar, _di, bar_index)
 
+// ── 8. Traceability ──────────────────────────────────────────────────────────
+string trc_src = doe_action == "Long" ? "IE1A:DR|" + tqe_grade : doe_action == "Short" ? "IE1A:SR|" + tqe_grade : doe_action == "No Trade" ? "IE2:Inv" : "Wait|" + ie1a_currentPhase
+string trc_scr = "IE:" + str.tostring(math.round(ie1a_phaseConfidence)) + " E:" + str.tostring(math.round(erf_confidence)) + " M:" + str.tostring(math.round(mce_htfAlignmentScore))
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// V72 — TRACEABILITY FRAMEWORK
-// Pure formatting — concatenates existing values into readable strings.
-// No new computation. No lifecycle authority.
-// ═══════════════════════════════════════════════════════════════════════════════
-
-string trc_decisionSource =
-     doe_action == "Long" ? "IE1A:DemandReturn | TQE:" + tqe_grade + " | NE:" + ne_dominantNarrative :
-     doe_action == "Short" ? "IE1A:SupplyReturn | TQE:" + tqe_grade + " | NE:" + ne_dominantNarrative :
-     doe_action == "No Trade" ? "IE2:Invalidated" :
-     "Waiting | Phase:" + ie1a_currentPhase
-
-string trc_confidenceBreakdown =
-     "IE1A:" + str.tostring(math.round(ie1a_phaseConfidence)) +
-     " ERF:" + str.tostring(math.round(erf_confidence)) +
-     " FRZ:" + str.tostring(math.round(tqe_frzQuality)) +
-     " MCE:" + str.tostring(math.round(mce_htfAlignmentScore)) +
-     " RE:" + str.tostring(math.round(re_recursiveCompletionScore)) +
-     " LIQ:" + str.tostring(math.round(tqe_liqQuality))
-
-string trc_waveChain =
-     "Wave#" + str.tostring(wr_activeWaveId) +
-     " (parent #" + str.tostring(wr_activeParentId) +
-     ", root #" + str.tostring(wr_activeRootId) + ")"
-
-string trc_deliveryChain =
-     dwr_activeDeliveryId > 0 ?
-     "Delivery#" + str.tostring(dwr_activeDeliveryId) +
-     " (root wave #" + str.tostring(wr_activeRootId) + ")" :
-     "No Active Delivery"
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// V72 — STANDARD COMMAND DASHBOARD (~20 decision fields)
-// Position: middle_right. Always visible. Pure decision-grade output.
-// Replaces the diagnostic-heavy legacy display in Standard mode.
-// ═══════════════════════════════════════════════════════════════════════════════
-
+// ── 9. Command Dashboard ─────────────────────────────────────────────────────
 if showTable and barstate.islast
-    var table cmdDash = table.new(position.middle_right, 2, 24,
-         bgcolor=color.new(#050520, 5),
-         border_color=color.new(#00ccff, 30),
-         border_width=1,
-         frame_color=color.new(#00ccff, 15),
-         frame_width=1)
-
-    string _cSz = dashTextSize == "tiny" ? size.tiny : size.small
-    int _cr = 0
-
-    // Header
-    table.cell(cmdDash, 0, _cr, "V72 COMMAND CENTER",
-         text_color=#00ccff, bgcolor=color.new(#0a0a40, 0), text_size=_cSz)
-    table.cell(cmdDash, 1, _cr, doe_action,
-         text_color=doe_action == "Long" ? #00ff88 : doe_action == "Short" ? #ff1744 :
-         doe_action == "No Trade" ? color.red : color.gray,
-         bgcolor=color.new(#0a0a40, 0), text_size=_cSz)
-    _cr := _cr + 1
-
-    // Market Bias
-    table.cell(cmdDash, 0, _cr, "Bias", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr, doe_bias,
-         text_color=doe_bias == "Strong Bullish" or doe_bias == "Bullish" ? color.lime :
-         doe_bias == "Strong Bearish" or doe_bias == "Bearish" ? color.red : color.gray,
-         text_size=_cSz)
-    _cr := _cr + 1
-
-    // Narrative
-    table.cell(cmdDash, 0, _cr, "Narrative", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr, ne_dominantNarrative,
-         text_color=ne_narrativeConflict ? color.yellow : color.white, text_size=_cSz)
-    _cr := _cr + 1
-
-    // Confidence
-    table.cell(cmdDash, 0, _cr, "Confidence", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr, str.tostring(math.round(doe_confidence)) + "%",
-         text_color=doe_confidence >= 70 ? color.lime : doe_confidence >= 50 ? color.yellow : color.red,
-         text_size=_cSz)
-    _cr := _cr + 1
-
-    // Trade Type
-    table.cell(cmdDash, 0, _cr, "Type", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr, doe_tradeType, text_color=color.white, text_size=_cSz)
-    _cr := _cr + 1
-
-    // Entry Zone
-    table.cell(cmdDash, 0, _cr, "Entry Zone", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr,
-         str.tostring(math.round(doe_entryLow, 2)) + " – " + str.tostring(math.round(doe_entryHigh, 2)),
-         text_color=color.aqua, text_size=_cSz)
-    _cr := _cr + 1
-
-    // Entry Trigger
-    table.cell(cmdDash, 0, _cr, "Trigger", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr, doe_entryTrigger, text_color=color.white, text_size=_cSz)
-    _cr := _cr + 1
-
-    // Quality Grade
-    table.cell(cmdDash, 0, _cr, "Quality", text_color=color.gray, text_size=_cSz)
-    color _qCol = tqe_grade == "A+" ? #00ff88 : tqe_grade == "A" ? color.lime :
-         tqe_grade == "B" ? color.yellow : tqe_grade == "C" ? color.orange : color.red
-    table.cell(cmdDash, 1, _cr, tqe_grade + " (Provisional)", text_color=_qCol, text_size=_cSz)
-    _cr := _cr + 1
-
-    // Risk Level
-    table.cell(cmdDash, 0, _cr, "Risk", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr, tqe_riskLevel,
-         text_color=tqe_riskLevel == "HIGH" ? color.red :
-         tqe_riskLevel == "MEDIUM" ? color.yellow : color.lime, text_size=_cSz)
-    _cr := _cr + 1
-
-    // TP1
-    table.cell(cmdDash, 0, _cr, "TP1", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr,
-         not na(te_tp1) ? str.tostring(math.round(te_tp1, 2)) : "—",
-         text_color=color.lime, text_size=_cSz)
-    _cr := _cr + 1
-
-    // TP2
-    table.cell(cmdDash, 0, _cr, "TP2", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr,
-         not na(te_tp2) ? str.tostring(math.round(te_tp2, 2)) : "—",
-         text_color=color.lime, text_size=_cSz)
-    _cr := _cr + 1
-
-    // Stop
-    table.cell(cmdDash, 0, _cr, "Stop", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr,
-         not na(inv_activeStop) ? str.tostring(math.round(inv_activeStop, 2)) : "—",
-         text_color=color.red, text_size=_cSz)
-    _cr := _cr + 1
-
-    // R:R to TP1
-    table.cell(cmdDash, 0, _cr, "R:R → TP1", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr,
-         not na(te_rr_tp1) ? str.tostring(math.round(te_rr_tp1, 1)) + ":1" : "—",
-         text_color=not na(te_rr_tp1) and te_rr_tp1 >= 2.0 ? color.lime :
-         not na(te_rr_tp1) and te_rr_tp1 >= 1.5 ? color.yellow : color.red,
-         text_size=_cSz)
-    _cr := _cr + 1
-
-    // Wave Phase
-    table.cell(cmdDash, 0, _cr, "Phase", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr,
-         ie1a_currentPhase + " (" + str.tostring(math.round(ie1a_phaseConfidence)) + "%)",
-         text_color=color.white, text_size=_cSz)
-    _cr := _cr + 1
-
-    // ERF Readiness
-    table.cell(cmdDash, 0, _cr, "ERF Ready", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr, str.tostring(math.round(erf_tradeReadiness)) + "%",
-         text_color=erf_tradeReadiness >= 60 ? color.lime :
-         erf_tradeReadiness >= 45 ? color.yellow : color.red, text_size=_cSz)
-    _cr := _cr + 1
-
-    // FRZ Distance
-    table.cell(cmdDash, 0, _cr, "FRZ Dist", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr,
-         not na(frz_distanceToZone) ? str.tostring(math.round(frz_distanceToZone, 1)) + " ATR" : "—",
-         text_color=not na(frz_distanceToZone) and frz_distanceToZone < 1.0 ? color.lime :
-         not na(frz_distanceToZone) and frz_distanceToZone < 2.0 ? color.yellow : color.gray,
-         text_size=_cSz)
-    _cr := _cr + 1
-
-    // Primary Attractor
-    table.cell(cmdDash, 0, _cr, "Attractor", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr,
-         not na(eae_primaryAttractorPrice) ?
-         str.tostring(math.round(eae_primaryAttractorPrice, 2)) + " (" + eae_primaryAttractorLabel + ")" : "—",
-         text_color=color.aqua, text_size=_cSz)
-    _cr := _cr + 1
-
-    // Convergence Flag
-    table.cell(cmdDash, 0, _cr, "Convergence", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr,
-         frz_attractorConvergence ? "★ ACTIVE" : "—",
-         text_color=frz_attractorConvergence ? #00ffcc : color.gray, text_size=_cSz)
-    _cr := _cr + 1
-
-    // Rotation State
-    table.cell(cmdDash, 0, _cr, "Rotation", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr,
-         rot_state + " (" + str.tostring(math.round(rot_transferProbability)) + "%)",
-         text_color=rot_state == "TRANSFER_IMMINENT" ? color.red :
-         rot_state == "CONTESTED" ? color.orange :
-         rot_state == "SOFTENING" ? color.yellow : color.lime, text_size=_cSz)
-    _cr := _cr + 1
-
-    // HTF Consensus
-    table.cell(cmdDash, 0, _cr, "HTF", text_color=color.gray, text_size=_cSz)
-    table.cell(cmdDash, 1, _cr, mce_htfAlignmentSummary,
-         text_color=mce_htfAlignmentScore >= 70 ? color.lime :
-         mce_htfAlignmentScore >= 50 ? color.yellow : color.red, text_size=_cSz)
-    _cr := _cr + 1
-
-    // Traceability (Advanced Mode only)
-    if dashAdvancedMode
-        table.cell(cmdDash, 0, _cr, "Source", text_color=color.gray, text_size=_cSz)
-        table.cell(cmdDash, 1, _cr, trc_decisionSource, text_color=color.white, text_size=_cSz)
-        _cr := _cr + 1
-        table.cell(cmdDash, 0, _cr, "Scores", text_color=color.gray, text_size=_cSz)
-        table.cell(cmdDash, 1, _cr, trc_confidenceBreakdown, text_color=color.white, text_size=_cSz)
-        _cr := _cr + 1
-        table.cell(cmdDash, 0, _cr, "Wave", text_color=color.gray, text_size=_cSz)
-        table.cell(cmdDash, 1, _cr, trc_waveChain, text_color=color.white, text_size=_cSz)
-        _cr := _cr + 1
-        table.cell(cmdDash, 0, _cr, "Delivery", text_color=color.gray, text_size=_cSz)
-        table.cell(cmdDash, 1, _cr, trc_deliveryChain, text_color=color.white, text_size=_cSz)
+    f_v72CmdDash(doe_action, doe_bias, ne_dominantNarrative, ne_narrativeConflict, doe_confidence, doe_tradeType, doe_entryLow, doe_entryHigh, doe_entryTrigger, tqe_grade, tqe_riskLevel, te_tp1, te_tp2, inv_activeStop, nz(te_rr_tp1), ie1a_currentPhase, ie1a_phaseConfidence, erf_tradeReadiness, frz_distanceToZone, rot_state, rot_transferProbability, mce_htfAlignmentScore, mce_htfAlignmentSummary, dashAdvancedMode, trc_src, trc_scr)
