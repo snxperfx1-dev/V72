@@ -1,0 +1,502 @@
+V72 IMPLEMENTATION READINESS REPORT
+Principal Architect Review — Pre-Implementation Audit
+Subject: V72 Master Architecture Specification (self-review before coding) Codebase: V71-4-ERF__4_.pine (5,790 lines) — verified against source Basis: V71 Audit Reports 1–5 + Audit 10 + direct pine code inspection
+
+REVIEWER'S STANDING ORDERS
+Every formula, weight, threshold, and score in the V72 Spec is treated as a hypothesis unless it is directly derivable from existing V71 code. The question being answered is not "Is this design plausible?" but "Is this design correct enough to code today without producing a system that is architecturally sound but empirically wrong?"
+
+PART 1 — ARCHITECTURE DECISIONS vs RESEARCH HYPOTHESES
+Before engine-by-engine classification, the V72 spec must be separated into what is known versus what is assumed.
+1.1 Architecture Decisions (Structural — No Calibration Needed)
+These follow logically from V71's existing structure. They are correct by construction.
+Decision	Basis
+Engine 1A sole lifecycle authority — untouched	Audit 1: 100% PASS, no competing assignments exist
+erf_suppressRotation gate on safeToReset preserved exactly	Confirmed at line 2314 — real, working integration
+longSignal/shortSignal must add ERF gate	Confirmed lines 2649–2661: no ERF condition present; gap is real
+eae_primaryAttractorPrice exists and is never shown numerically	Confirmed: line 1231 calculates price; line 4005 renders only label
+eae_secondaryAttractorPrice exists and is never rendered	Confirmed: lines 1238–1260 calculate it; zero dashboard table.cell calls reference it
+frz_bestScore exists and is computed per-bar	Confirmed: lines 5575–5614 — computed in scan loop
+frz_dirArr stores direction per zone (1 = bull, -1 = bear)	Confirmed: line 5449 pushes _frz_spawnDir
+FRZ panel sorts by recency (newest-first), not score	Confirmed: zones pushed to arrays in spawn order, rendered in array order
+Three competing directive strings produce potential contradictions	Confirmed: directiveStr (Section 24), liveDirective (Section 21), execDirective (Execution Probability V2) — all independent
+die_entryScore does not include ERF or FRZ components	Confirmed: lines 3104–3113 — no erf_* or frz_* variables present
+frz_bestTop and frz_bestBot do NOT exist as variables	FLAW FOUND — V72 Spec §12.7 references frz_bestTop and frz_bestBot. These variables do not exist in V71. Only frz_topArr and frz_botArr arrays exist. Best zone top/bot must be extracted from array using frz_bestScore index.
+FRZ frz_bestDir does NOT exist as a named variable	FLAW FOUND — V72 Spec §8.1 references frz_bestDir. Does not exist. Direction of best zone must be looked up from frz_dirArr at the best-score index.
+erf_confidence is already calculated but gates nothing	Confirmed: lines 1281–1286 calculate it; lines 2649–2661 do not reference it
+htfAlign is binary (1 / -1 / 0), not a score 0–100	Confirmed: line 337 — htfAlign = 1, -1, or 0 only
+modelConfidence is an adaptive float (not a fixed score)	Confirmed: lines 1930–1945 — decaying adaptive variable
+1.2 Research Hypotheses (Must NOT Be Coded As Written)
+These are design proposals in the V72 Spec that have no derivation from existing V71 logic. They require empirical validation before implementation.
+Section	Hypothesis	Why It Is a Hypothesis
+§3.2 RIE weights (0.35 / 0.30 / 0.20 / 0.15)	rot_pressure formula	No historical calibration. obs_DecayScore, obs_AbsorptionScore, convexityScore are independent sensors. Their relative contribution to "rotation pressure" is unknown.
+§4.3 MCE alignment score (% TFs agreeing)	mce_alignmentScore	Simple majority vote across 9 TFs has no known relationship to actual forward direction probability. Equal-weight TF voting ignores that Monthly carries fundamentally more authority than M1.
+§6.3 TQE weights (0.25 / 0.15 / 0.15 / 0.20 / 0.10 / 0.15)	tqe_rawScore	Completely uncalibrated. The relative weight of erf_confidence vs frz_quality vs mce_htfAlignment in predicting trade outcomes is a research question, not an architecture decision.
+§6.3 TQE grade thresholds (85/72/58/42)	A+/A/B/C/D bands	Arbitrary. There is no evidence these thresholds correspond to meaningful outcome differences.
+§10.4 Target quality weights	te_tp1/tp2/tp3_quality	The idea that secondary attractor × 0.40 + frz convergence + recursiveCompletion × 0.15 + execAlignment × 0.20 = TP1 quality is entirely hypothetical.
+§10.6 Tertiary attractor as primaryAttractor + ATR×2.0	eae_tertiaryAttractorPrice	ATR×2.0 extension has no energy-theory basis. It is a geometric guess, not a derived target.
+§9.3 Node convergence threshold (ATR×0.5)	frz_attractorConvergence	The 0.5 ATR threshold for convergence is arbitrary. Could be 0.3 or 1.5.
+§12.5 DOE confidence cap at 95 vs 88	doe_confidence ceiling	No basis for these caps. The 7-point difference between convergence and non-convergence states is invented.
+§11.4 Stop buffer ATR×0.25 / ATR×0.10	inv_bullOriginPrice / inv_demandFailPrice	ATR multipliers for stop placement are empirically uncalibrated.
+§5.2 Narrative thresholds (80 / 70 / 65 / 50 / 55)	ne_dominantNarrative conditions	mce_htfAlignmentScore >= 80 for "Bullish Continuation" vs >= 70 for others is arbitrary.
+§12.4 rot_transferProbability >= 75 for rotation entry	doe_action Rotation gate	The 75 threshold for rotation entries is uninvestigated.
+§8.1 FRZ proximity as ATR < 2.0	frz_inProximity	2.0 ATR is a geometric assumption with no validation.
+1.3 Calibration Assumptions (Can Be Implemented with Placeholder Values, Must Be Tunable)
+These are formula structures that are architecturally correct but whose specific constants must be exposed as inputs for calibration.
+Item	Required Action
+All TQE component weights	Expose as float inputs with defaults matching spec
+All grade thresholds (85/72/58/42)	Expose as int inputs
+ATR multipliers in Invalidation Engine	Expose as float inputs (default 0.25, 0.10)
+FRZ proximity ATR threshold	Expose as float input (default 2.0)
+MCE timeframe weighting scheme	Expose as selection: Equal Weight / HTF-Biased / Linear Decay
+Rotation transfer probability thresholds	Expose as int inputs
+frz_attractorConvergence distance	Expose as float input (default 0.5 ATR)
+doe_confidence caps	Expose as int inputs (default 88 / 95)
+PART 2 — ENGINE-BY-ENGINE CLASSIFICATION
+
+ENGINE: ROTATION INTELLIGENCE ENGINE (RIE / Engine 2)
+Verdict: APPROVED WITH MODIFICATIONS
+What is architecturally correct: The RIE concept is valid and non-threatening to IE1A. All four proposed output variables (rot_pressure, rot_controlStability, rot_transferProbability, rot_state) are new identifiers with no lifecycle authority. The input set (obs_ExpansionScore, obs_DecayScore, obs_AbsorptionScore, efficiency, convexityScore, ede_state, re_resolutionState) is entirely read-only from existing sensors. The IE1A authority boundary is respected — RIE measures pressure, not phase.
+Critical flaw — circular dependency risk: The V72 Spec (§3.2) uses re_resolutionState in rot_transferProbability. re_resolutionState depends on ie1a_currentPhase (via re_absorbedAndReturned which reads ie1a_currentPhase). This is not circular — RIE reads re_resolutionState after IE1A computes it — but the execution order in PineScript must be verified. IE1A → EDE → RE → RIE is the required compute order. This order must be explicitly enforced in code placement.
+Research items in this engine: The weights in rot_pressure (0.35 / 0.30 / 0.20 / 0.15) and in rot_transferProbability (0.50 / 0.30) are uncalibrated hypotheses. The formula is structurally sound but the constants are invented.
+Required modifications before implementation:
+1. Weights must be exposed as tunable inputs, not hardcoded.
+2. Remove rot_emergingWaveStrength from V1 scope — it overlaps conceptually with rot_pressure and adds calibration complexity without a clear separate downstream consumer. Implement in V2 after rot_pressure is validated.
+3. The V72 Spec (§2.2) renames liveDirective to rie_controlDirective. This is incorrect. liveDirective is computed in the Slippage/Opportunity Engine (Section 22 area), not the Rotation Engine. Renaming it would falsely imply RIE owns it. Action: leave liveDirective as-is, move to Advanced display only; do not rebrand it under RIE authority.
+Implementation scope: Implement rot_pressure, rot_controlStability, rot_transferProbability, rot_state. Defer rot_emergingWaveStrength.
+
+ENGINE: MULTI-TIMEFRAME CONSENSUS ENGINE (MCE)
+Verdict: APPROVED WITH MODIFICATIONS
+What is architecturally correct: Extending from 2 HTF levels (tf1, tf2) to a configurable 9-level stack is architecturally clean. V71 already uses request.security() for tf1 and tf2 (lines 286–299). The same pattern extends naturally. The per-timeframe object design (lifecycle progress score, confidence, direction) is non-invasive and derives from existing layer outputs.
+Critical flaw — lifecycle progress score mapping: The V72 Spec maps IE1A phases to a 0–100 lifecycle progress integer. This is an architectural overreach if not handled carefully. The mapping assigns cardinal numbers to phases (e.g., Expansion=20, NewHL=80), implying a linear lifecycle progression. IE1A's lifecycle is not linear — it is a conditional state machine. The "progress" score is a display convenience, not a physics measure. It must be labeled explicitly as a display heuristic, not fed back into any decision engine as if it were a continuous lifecycle variable.
+Critical flaw — equal-weight TF voting: mce_alignmentScore as a simple count of agreeing TFs gives M1 equal weight to Monthly. This is likely empirically wrong. A Monthly + Weekly + Daily alignment against M1 should outweigh M1's direction. However, the correct weighting scheme is a research question. Therefore:
+* Implement structural version (equal weight) first, exposed as a selectable mode.
+* Do NOT implement the HTF-biased version as the default until tested.
+PineScript constraint — 9 request.security() calls: V71 currently uses 2. Adding 7 more request.security() calls increases compute load significantly. PineScript has a limit of 40 request.security() calls total per script, but performance degrades with many concurrent HTF calls. The Phase 4 roadmap of "9 fully independent TF consensus signals" may hit performance walls. Start with 4 configurable TF inputs (tf1, tf2, tf3, tf4) and extend later.
+Required modifications:
+1. Implement 4 TF levels in V1 (extend existing tf1/tf2 to tf1/tf2/tf3/tf4).
+2. Expose TF weighting as input parameter (equal / linear-HTF-biased).
+3. Lifecycle progress map is display-only — never feed numeric lifecycle progress score into decision engines.
+4. Rename mce_htfNarrative / mce_mtfNarrative / mce_execNarrative to avoid ambiguity with the Narrative Engine. These are alignment summaries, not narratives. Use mce_htfAlignmentSummary, mce_execAlignmentSummary.
+
+ENGINE: NARRATIVE ENGINE (NE)
+Verdict: APPROVED WITH MODIFICATIONS
+What is architecturally correct: The single-dominant-narrative constraint is correct and important. The 8 permitted narrative types are well-chosen. Deriving narrative from MCE consensus rather than raw IE1A phase is an upgrade over V71's die_narrativeDir which simply relays ie1a_hypFamily.
+Critical flaw — narrative derivation assumes MCE outputs exist: The NE conditions reference mce_htfAlignmentScore. If MCE is not yet implemented (or implements fewer TFs), NE falls back to undefined behavior. The NE must have a graceful degradation path using the existing htfAlign (lines 337–338) as a simplified alignment input when MCE is unavailable.
+Specific flaw in narrative conditions: V72 Spec §5.2 "Bullish Continuation" condition: ie1a in {Expansion, NewHL, DemandReturn} with rot_transferProbability < 40. This is partially redundant. Demand Return is a return-to-zone phase — calling it "Continuation" is semantically incorrect. Demand Return should map to "Bullish Pullback" (price returning to demand = pullback in a bull market), not Continuation. This is a semantic classification error that would produce misleading dashboard output.
+Required modifications:
+1. Fix Demand Return → "Bullish Pullback" (not Continuation). Fix Supply Return → "Bearish Pullback".
+2. Add degradation path: if MCE not active, use htfAlign as simplified consensus input.
+3. Add ne_narrativeAge counter (bars since narrative last changed) — essential for preventing narrative flapping on boundary conditions.
+4. The conflict flag ne_narrativeConflict is correct and important — retain.
+
+ENGINE: TRADE QUALIFICATION ENGINE (TQE)
+Verdict: REQUIRES RESEARCH — Implement Structure Only
+What is architecturally correct: The TQE concept is correct. A dedicated gate layer between intelligence and decision is architecturally necessary and non-invasive to IE1A. The six input sources (IE1A confidence, ERF confidence, FRZ quality, MCE alignment, RE completion, liquidity) are all real V71 variables.
+Why the formula cannot be implemented as written: The specific weights (0.25 / 0.15 / 0.15 / 0.20 / 0.10 / 0.15) and grade thresholds (85 / 72 / 58 / 42) are entirely uncalibrated. There is no empirical basis for these numbers. Implementing them as-is would produce a "grade" that has no validated relationship to actual trade outcomes. A trader given an "A+" signal that systematically produces bad results has been misled by the architecture.
+What CAN be implemented now:
+1. The TQE structure — the six inputs, the formula skeleton, the output variables.
+2. All weights exposed as float inputs with neutral defaults (equal weighting: 0.167 each).
+3. The grade thresholds exposed as int inputs with provisional defaults (80/65/50/35).
+4. The tqe_readiness boolean gate — the minimum threshold conditions (ie1a_phaseConfidence >= 50, mce_htfAlignmentScore >= 50) are architecturally defensible even without calibration.
+5. The tqe_riskLevel logic is defensible: high rot_transferProbability = high risk. This is a structural truth, not a calibrated threshold.
+Additional flaw — double-counting: erf_confidence (as calculated at line 1281–1286) already incorporates ie1a_phaseConfidence * 0.40. If ie1a_phaseConfidence is also a direct TQE input at 25% weight, IE1A confidence is counted approximately 1.4× while other components are counted 1×. This must be corrected. Either:
+* Reconstruct erf_confidence to exclude the IE1A component (erf_pure_confidence), or
+* Reduce the IE1A weight in TQE to 15% when erf_confidence is in the mix.
+Required modifications:
+1. Expose all weights and thresholds as tunable inputs.
+2. Fix the ie1a_phaseConfidence double-counting in erf_confidence.
+3. Label the engine output as "Provisional Grade" in dashboard until calibrated.
+4. Defer auto-degradation of DOE action based on TQE grade until calibration validates thresholds.
+
+ENGINE: DECISION OUTPUT ENGINE (DOE)
+Verdict: APPROVED WITH MODIFICATIONS
+What is architecturally correct: The DOE concept is the highest-priority architectural addition. The authority boundary (sole owner of doe_* variables, consumer only, no raw computation) is correct. Resolving the three-directive conflict is mandatory. The output variable set (bias, action, confidence, tradeType, entryMid/High/Low, entryTrigger, entryQuality) is correct and complete.
+Critical flaw — premature TQE dependency: doe_action in V72 Spec §12.4 gates on tqe_readiness. If TQE grades are miscalibrated (as established above), DOE inherits those errors. During the calibration period, DOE must have a fallback path that does not depend on TQE grade.
+Interim DOE action logic (calibration-safe):
+
+
+// Phase 1 DOE — uses hard structural gates, not TQE grade
+doe_action =
+    inv_invalidated ? "No Trade" :
+    not te_rrGate ? "Wait" :          // R:R < 1.5 always blocks
+    not erf_entryGate ? "Wait" :      // ERF gate (this IS calibrated — §7.2)
+    ie1a_currentPhase == "Demand Return" and direction == 1 ? "Long" :
+    ie1a_currentPhase == "Supply Return" and direction == -1 ? "Short" :
+    "Wait"
+// TQE grade used for doe_entryQuality label only — not as action gate — until calibrated
+Critical flaw — doe_entryMid derivation uses non-existent variables: V72 Spec §12.7 references frz_bestTop and frz_bestBot. These do not exist. The correct implementation must find the best-score FRZ zone's top and bottom from frz_topArr and frz_botArr at the index where frz_scoreArr is maximized.
+Required modifications:
+1. Decouple DOE action from TQE grade until calibration complete. TQE grade drives doe_entryQuality display only in Phase 1.
+2. Fix frz_bestTop/frz_bestBot references — implement as index-lookup from arrays.
+3. The confidence formula (§12.5) is a research hypothesis. In Phase 1, use modelConfidence (already calibrated adaptively) as the primary doe_confidence input, supplemented by mce_alignmentScore and ie1a_phaseConfidence as modifiers.
+4. The 88/95 hard caps are arbitrary — expose as inputs.
+5. doe_tradeType derivation from ne_dominantNarrative is correct (after NE semantic fix above).
+
+ENGINE: TARGET ENGINE (TE)
+Verdict: APPROVED WITH MODIFICATIONS
+What is architecturally correct: The three-tier target hierarchy (secondary attractor → TP1, primary attractor → TP2, tertiary → TP3) is architecturally sound and non-invasive. EAE already computes eae_primaryAttractorPrice and eae_secondaryAttractorPrice. Surfacing them as named targets is an integration step, not new computation. The Target Engine converts existing EAE output into trader-readable levels.
+Critical flaw — attractor price semantics: After inspecting the V71 code (lines 1231–1260), the attractor price semantics are:
+* eae_primaryAttractorPrice when UNRESOLVED = flipBot (bull) or flipTop (bear) — the current flipzone. This is where price currently IS (or recently was). In many cases during Demand Return, price is already inside this zone. Labeling the flipzone as "TP2" is problematic because it may be at or below the current price for a bull trade.
+* eae_secondaryAttractorPrice when UNRESOLVED = inducZoneLow (bull) or inducZoneHigh (bear) — the induction zone. This is typically behind the direction of trade (the zone price came from).
+This means the V72 Spec's attractor → TP mapping may be directionally backwards in certain phases. The attractors describe where price needs to return to complete energy resolution, not necessarily where price is going next.
+Required correction: The Target Engine must check whether each attractor price is in the direction of the trade before assigning it as a TP level. An attractor below close for a long trade is a support reference, not a target.
+
+
+// TE must first qualify attractor direction:
+bool te_tp1_valid = direction == 1 ? te_tp1 > close : te_tp1 < close
+bool te_tp2_valid = direction == 1 ? te_tp2 > close : te_tp2 < close
+// If neither is directionally valid → te output = na, doe_action = "Wait"
+The FRZ-based target fallback (§8.3) is the more reliable immediate TP source:
+
+
+// FRZ targets are directionally filtered by frz_dirArr
+// Bull trade: highest-score FRZ with direction == 1 ABOVE close = TP candidate
+// Bear trade: highest-score FRZ with direction == -1 BELOW close = TP candidate
+This FRZ-based TP is safer than attractor-based TP in Phase 1.
+Required modifications:
+1. Implement FRZ-based TP as the Phase 1 primary TP1 source (directionally filtered).
+2. Attractor-based TP is Phase 2 (after attractor directionality is validated).
+3. Tertiary attractor (ATR×2.0 extension) is Phase 3 — geometric, must be validated.
+4. te_rr_tp1 R:R gate (>= 1.5) is architecturally sound — retain.
+5. te_expectedPath derivation is a research hypothesis — implement as display-only, not as decision gate.
+
+ENGINE: INVALIDATION ENGINE (IE2)
+Verdict: APPROVED WITH MODIFICATIONS
+What is architecturally correct: Invalidation Engine is the most clearly derivable component in the spec. point4OriginLow, point4OriginHigh, flipBot, flipTop all exist in V71 and are the natural stop reference levels. Calculating stop-loss prices before entry is an unambiguous improvement. IE1A already uses close < flipBot - atr * 0.5 for bullInvalid (line 2310) — the Invalidation Engine formalises this.
+Flaw — inv_demandFailPrice approximation is wrong: V72 Spec §11.4 calculates demand zone low as:
+
+
+cycleHigh - (cycleHigh - cycleLow) * 0.60 - atr * 0.10
+This is an invented approximation. The actual demand zone in V71 is defined by flipBot (lower boundary of the flip zone). The demand failure price should be:
+
+
+inv_demandFailPrice = flipBot - atr * bufferMult  // where flipBot is the zone floor
+This is directly derivable from existing V71 variables and is not an approximation.
+Flaw — inv_supplyFailPrice similarly simplified: Should be flipTop + atr * bufferMult for supply zone top — flipTop exists (line 482).
+Required modifications:
+1. Replace cycleHigh - (cycleHigh - cycleLow) * 0.60 approximation with flipBot / flipTop directly.
+2. Expose ATR buffer multiplier as input (default: 0.25 for origin stops, 0.10 for zone stops).
+3. inv_riskInATR is correct and valuable — retain.
+4. bullInvalid / bearInvalid at lines 2310–2311 already implement informal invalidation. IE2 must not duplicate this logic — it must read from these existing booleans and extend them with price levels.
+5. No conflict with IE1A: IE1A uses bullInvalid/bearInvalid to influence safeToReset. IE2 uses them to calculate and display the price level. Separate authorities, shared input signals.
+
+ENGINE: WAVE REGISTRY (WR)
+Verdict: APPROVED WITH MODIFICATIONS
+What is architecturally correct: Sequential waveId assignment on wave spawn, parent-child tracking via parallel arrays, and preserving birthBar / deathBar are all achievable in PineScript using var arrays. The spawn hook insertion (at the existing waveReset block, lines ~2041–2064) is clean. No lifecycle logic changes required.
+PineScript constraint: PineScript arrays have no struct support. The parallel array approach is correct. However, PineScript does not have a native "find index by value" function — array.indexof() must be used carefully for performance. With a max waveDepth of 4 and limited array growth, this is manageable.
+Flaw — wr_activeParentId initialization: When a root wave spawns (isRecursiveWave = false), the parent should be 0 (no parent). When a recursive wave spawns, the parent is the previous wr_activeWaveId. The V72 Spec handles this but the transition logic at wave death needs care: when safeToReset fires (line 2316), wr_activeWaveId resets to 0 before the new wave spawns. The death hook must fire before the reset.
+Required modifications:
+1. Wave death hook must precede the safeToReset block, not follow it.
+2. Array size should be bounded (max 50 entries with rolling eviction) to prevent memory growth on long chart histories.
+3. wr_phaseHistory as a comma-separated string is fragile in PineScript (string concatenation per-bar). Store only the phase at spawn and phase at death — not a full per-bar history.
+
+ENGINE: DELIVERY WAVE REGISTRY (DWR)
+Verdict: REQUIRES RESEARCH — Defer to Phase 3
+What is architecturally correct: The DWR concept is valid. Formalizing delivery wave lineage addresses the Severity 2 audit gap. The spawn conditions (ede_state == 4 transitions) are derivable from existing V71 variables.
+Why it must be deferred:
+1. The DWR adds significant PineScript complexity (another 6–8 parallel arrays, spawn/death hooks inside state transitions) on top of the Wave Registry — which must be validated first.
+2. The downstream consumers of DWR in V72 are: Traceability Framework and Advanced Dashboard only. No decision engine currently consumes DWR output. This means DWR has zero trading impact until further engines are built.
+3. The relationship between DeliveryWave and Resolution State needs empirical validation — it is theoretically sound but untested.
+Required action: Defer DWR to Phase 3. Implement Wave Registry (WR) first. Once WR is validated and DWR's downstream consumers are defined, implement DWR.
+
+COMPONENT: TRACEABILITY FRAMEWORK
+Verdict: APPROVED WITH MODIFICATIONS (Phase 3)
+What is architecturally correct: The trc_* string variables are pure formatting — they concatenate existing variables into human-readable strings. No computation risk. No lifecycle authority conflict. The decision → wave → parent → root chain becomes programmatically traversable only after WR is implemented.
+Modification: Implement trc_decisionSource and trc_confidenceBreakdown in Phase 2 (they only require DOE and TQE to exist). Implement trc_waveChain and trc_deliveryChain in Phase 3 (require WR and DWR).
+
+COMPONENT: ERF INTEGRATION FRAMEWORK
+Verdict: APPROVED — Implement Phase 1
+What is architecturally correct: This is the clearest, most directly derivable addition in the entire spec. The variables are already computed. The gaps are well-defined. The integration is:
+1. Surface eae_primaryAttractorPrice as numeric text in dashboard — trivial fix.
+2. Add erf_entryGate to longSignal/shortSignal — small addition to lines 2649–2661.
+3. Add erf_tradeReadiness as a synthesis of existing RE/EAE variables.
+Flaw in erf_entryGate logic: V72 Spec §7.2 allows entry when UNRESOLVED + tradeReadiness >= 60. This means a partially-ready UNRESOLVED state can still produce entries. The logic is:
+
+
+erf_entryGate = re_resolutionState != "UNRESOLVED" OR (re_resolutionState == "UNRESOLVED" AND erf_tradeReadiness >= 60)
+This is equivalent to: erf_tradeReadiness >= 60 OR re_resolutionState != "UNRESOLVED". A high readiness score in an UNRESOLVED state is paradoxical — readiness is partly derived from resolution state. Verify that erf_tradeReadiness can independently reach 60 in UNRESOLVED state without false positives. Simpler and safer:
+
+
+erf_entryGate = erf_tradeReadiness >= 45  // single threshold, all states
+// erf_tradeReadiness naturally scores low when UNRESOLVED (10 pts max from resolution component)
+// and high when RESOLVED (40 pts from resolution component)
+erf_tradeReadiness double-counting check: The formula (§7.1) uses re_recursiveCompletionScore * 0.25 and erf_confidence * 0.15. erf_confidence (line 1281) includes re_resolutionState as a component. re_recursiveCompletionScore is independent. This is not double-counting — they are separate variables, acceptable.
+
+COMPONENT: FRZ INTEGRATION FRAMEWORK
+Verdict: APPROVED WITH MODIFICATIONS — Phase 1/2
+Phase 1 (immediate): Fix sort order. Surface frz_distanceToZone. Surface best-score zone as distinct labeled row. Phase 2 (after validation): Wire frz_quality into TQE. Wire frz_bestDir-filtered zones into Target Engine.
+Flaw — frz_bestZoneMid is not a stored variable: V72 Spec §8.1 references frz_bestZoneMid. Does not exist. Must be computed inline:
+
+
+pine
+// Best zone mid — computed from arrays at best-score index
+int frz_bestIdx = // index of frz_bestScore in scan loop (already found in lines 5608–5614)
+// Need to store this index: add `var int frz_bestIdx = -1` and update in scan loop
+float frz_bestZoneMid = frz_bestIdx >= 0 ? (array.get(frz_topArr, frz_bestIdx) + array.get(frz_botArr, frz_bestIdx)) / 2.0 : na
+float frz_distanceToZone = not na(frz_bestZoneMid) ? math.abs(close - frz_bestZoneMid) / atr : na
+FRZ ↔ ERF Unification (§9): The conceptual model (FRZ = where energy needs to go, ERF = how much energy is outstanding) is architecturally sound and non-invasive. frz_resolutionScore and frz_residualEnergy are clean additions. However the frz_attractorConvergence condition (EAE primary attractor within ATR×0.5 of best FRZ) requires the attractor price directional-validity fix from the Target Engine review to be applied first. If the primary attractor price is directionally backwards, convergence detection will fire falsely.
+Convergence signal promotion (§9.4): The spec states convergence promotes TQE grade by one letter and raises doe_confidence cap to 95. Both are research hypotheses. Implement as display flag only in Phase 1 — do not promote grade automatically until validated.
+
+COMPONENT: DASHBOARD REDESIGN
+Verdict: APPROVED WITH MODIFICATIONS — Implement Incrementally
+Phase 1 — Fixes (no new engines required):
+* Surface eae_primaryAttractorPrice as numeric text (1-line fix)
+* Surface eae_secondaryAttractorPrice as separate row
+* Add frz_distanceToZone to FRZ panel
+* Fix FRZ sort to score-descending (requires sort step in scan loop)
+* Add inv_activeStop row to Standard panel
+* Add te_tp1 / te_tp2 rows to Standard panel
+* Add single dashAdvancedMode boolean input to gate diagnostic panels
+Phase 2 — Standard Mode COMMAND panel: Build the full 20-field Standard panel consuming DOE, TQE, TE, IE2 outputs.
+Phase 3 — Advanced Mode restructure: Move all diagnostic panels (B, C, P3, ERF, FU) behind dashAdvancedMode toggle.
+Flaw in V72 dashboard field list: The Standard panel includes ne_narrativeStrength as a rendered bar. PineScript dashboard tables (table.cell) do not natively render progress bars — this must be implemented as a Unicode character approximation or a separate plot. This is an implementation detail, not an architectural flaw, but must be noted.
+Hypothesis Engine deprecation: Panel C "Hypothesis Engine" block (hyp_LateExpansion_N etc.) is confirmed deprecated in Audit 10. It should be hidden by default in V72 Standard and Advanced modes and removed from computation in V73. Do not remove in V72 (regression risk) — gate it behind an additional showDC_Hypothesis toggle already present in V71 (line ~57), defaulting to false.
+
+PART 3 — ENGINE AUTHORITY AUDIT vs IE1A
+All proposed engines reviewed against the four IE1A protection rules:
+Engine	Unified Wave Lifecycle	S+M+P Validation	IE1A Sole Authority	BOS as Evidence
+RIE	✅ Does not assign phases	✅ Reads physics outputs only	✅ No ie1a_* assignment	✅ No BOS usage
+MCE	⚠️ Lifecycle progress map is a display heuristic — must not be treated as a physics score	✅	✅	✅
+NE	✅	✅	✅	✅
+TQE	✅	✅	✅	✅
+DOE	✅ Reads ie1a_currentPhase as gate only, never assigns	✅	✅	✅
+TE	✅	✅	✅	✅
+IE2	⚠️ Must not create its own invalidation trigger — reads existing bullInvalid/bearInvalid	✅	✅	✅
+WR	✅	✅	✅	✅
+DWR	✅	✅	✅	✅
+Traceability	✅	✅	✅	✅
+Dashboard	✅	✅	✅	✅
+No engine in the V72 spec assigns lifecycle phases. IE1A authority is intact.
+One latent risk identified: The MCE lifecycle progress score (§4.2) could be misused downstream as if it were a physics-based measure. The spec must include an explicit statement that the lifecycle progress integer is a monotonic display heuristic for visual ranking only, and must never be fed into a physics calculation or treated as a continuous energy measure.
+
+PART 4 — CRITICAL CHANGES REQUIRED (BEFORE ANY CODE)
+The following must be corrected in the V72 Spec before implementation begins:
+#	Change	Severity	Section
+C1	frz_bestTop, frz_bestBot, frz_bestDir do not exist — replace with index-lookup from arrays	BLOCKING	§8.1, §12.7
+C2	Attractor prices may be directionally backwards — TE must filter for in-direction attractors only	BLOCKING	§10, §12.7
+C3	Demand Return phases mis-assigned to "Continuation" narrative — fix to "Pullback"	MAJOR	§5.2
+C4	ie1a_phaseConfidence double-counted in TQE via erf_confidence — reduce IE1A direct weight or use erf_pure_confidence	MAJOR	§6.3
+C5	safeToReset fires before wave death hook in WR — death hook must execute first	MAJOR	§13
+C6	TQE grade must not gate DOE action in Phase 1 — TQE drives display quality label only until calibrated	MAJOR	§6.3, §12.4
+C7	frz_attractorConvergence auto-promotion of grade deferred until attractor direction validated	MAJOR	§9.4
+C8	liveDirective must not be renamed rie_controlDirective — RIE does not own it	MODERATE	§2.2, §3
+C9	inv_demandFailPrice must use flipBot (not geometric approximation)	MODERATE	§11.4
+C10	erf_entryGate simplified to single threshold (erf_tradeReadiness >= 45)	MODERATE	§7.2
+C11	MCE lifecycle progress score labeled as display heuristic, never fed to physics calculation	MODERATE	§4.2
+C12	WR phaseHistory must store spawn-phase and death-phase only, not per-bar accumulation	MODERATE	§13.1
+C13	DWR deferred to Phase 3 — no downstream consumer in Phase 1 or 2	MODERATE	§14
+C14	frz_attractorConvergence = display flag only in Phase 1 (no auto-action)	MODERATE	§9.4
+C15	MCE initial implementation: 4 TF levels (not 9) with equal-weight default	LOW	§4
+C16	rot_emergingWaveStrength deferred to RIE v2	LOW	§3.2
+PART 5 — FINAL ENGINE CLASSIFICATION TABLE
+Engine	Verdict	Phase	Key Condition
+ERF Integration (attractor price display + entry gate)	APPROVED FOR IMPLEMENTATION	Phase 1	Trivial fixes. Zero risk to IE1A.
+Invalidation Engine (IE2)	APPROVED FOR IMPLEMENTATION	Phase 1	After C9 fix (flipBot/flipTop). Expose ATR multiplier as input.
+Target Engine (TE)	APPROVED WITH MODIFICATIONS	Phase 1/2	Phase 1: FRZ-based TP only (directionally filtered). Phase 2: attractor-based TP after direction validation.
+Decision Output Engine (DOE)	APPROVED WITH MODIFICATIONS	Phase 2	After C1, C2, C6 fixes. Phase 1 DOE = structural gates only (no TQE dependency).
+FRZ Integration (sort fix + distance + best-zone display)	APPROVED FOR IMPLEMENTATION	Phase 1	After C1 fix. Low risk, high display value.
+FRZ ↔ ERF Unification	APPROVED WITH MODIFICATIONS	Phase 2	After C7 fix. Convergence = display flag only until validated.
+Narrative Engine (NE)	APPROVED WITH MODIFICATIONS	Phase 2	After C3 fix. Requires MCE alignment input (or htfAlign fallback).
+Rotation Intelligence Engine (RIE)	APPROVED WITH MODIFICATIONS	Phase 2	After C8 fix. Weights as inputs. rot_emergingWaveStrength deferred.
+MCE (4-level)	APPROVED WITH MODIFICATIONS	Phase 2	After C11, C15 fixes. 4 TFs, equal-weight default, expansion to 9 is Phase 3.
+Trade Qualification Engine (TQE)	REQUIRES RESEARCH — Implement Structure	Phase 2	After C4, C6 fixes. Weights as inputs, neutral defaults, grade = display label only until calibrated.
+Wave Registry (WR)	APPROVED WITH MODIFICATIONS	Phase 2	After C5, C12 fixes. Array size bounded.
+Dashboard Redesign	APPROVED WITH MODIFICATIONS	Phase 1→3	Incremental. Phase 1 fixes first, Standard/Advanced restructure in Phase 3.
+Traceability Framework	APPROVED WITH MODIFICATIONS	Phase 2/3	trc_decisionSource + trc_confidenceBreakdown in Phase 2. Wave chain in Phase 3.
+DeliveryWave Registry (DWR)	REQUIRES RESEARCH — Defer	Phase 3	No decision consumers in Phase 1/2. Implement after WR validated.
+PART 6 — SAFE IMMEDIATE IMPLEMENTATIONS (Phase 1)
+These can be coded right now with high confidence of correctness and zero risk of regression:
+P1-1: Surface eae_primaryAttractorPrice numerically Add one table.cell call after line 4005 displaying str.tostring(math.round(eae_primaryAttractorPrice, 2)). Estimated: 3 lines.
+P1-2: Add eae_secondaryAttractorPrice dashboard row New row in ERF panel showing price + score. Estimated: 6 lines.
+P1-3: FRZ sort by score (not recency) Add frz_bestIdx tracking variable to the scan loop at line 5608. Store index. Use to compute frz_bestZoneMid, frz_distanceToZone, frz_bestZoneTop, frz_bestZoneBot, frz_bestZoneDir. Estimated: 15 lines.
+P1-4: frz_distanceToZone in FRZ panel One new dashboard row using frz_distanceToZone. Estimated: 5 lines.
+P1-5: FRZ panel sort by score Change FRZ dashboard zone-row loop to iterate by descending score rather than array insertion order. Estimated: 10 lines (sort step before render loop).
+P1-6: Invalidation Engine core (IE2)
+
+
+float inv_bullOriginPrice = not na(point4OriginLow) ? point4OriginLow - atr * invOriginBuffer : na
+float inv_bearOriginPrice = not na(point4OriginHigh) ? point4OriginHigh + atr * invOriginBuffer : na
+float inv_demandFailPrice = direction == 1 and not na(flipBot) ? flipBot - atr * invZoneBuffer : na
+float inv_supplyFailPrice = direction == -1 and not na(flipTop) ? flipTop + atr * invZoneBuffer : na
+float inv_activeStop = direction == 1 ? nz(inv_demandFailPrice, inv_bullOriginPrice) :
+                       direction == -1 ? nz(inv_supplyFailPrice, inv_bearOriginPrice) : na
+float inv_riskInPts = not na(inv_activeStop) ? math.abs(close - inv_activeStop) : na
+float inv_riskInATR = not na(inv_riskInPts) ? inv_riskInPts / atr : na
+Inputs: invOriginBuffer (default 0.25), invZoneBuffer (default 0.10). Estimated: 20 lines.
+P1-7: Target Engine Phase 1 (FRZ-based TP only) Scan frz_topArr, frz_botArr, frz_dirArr, frz_scoreArr to find the highest-score FRZ in the direction of trade, above close (bull) or below close (bear).
+
+
+float te_tp1 = na  // Highest-score FRZ in trade direction, beyond close
+// Loop through frz arrays, filter by dirArr == direction, price beyond close, take highest score
+float te_rr_tp1 = not na(te_tp1) and not na(inv_riskInPts) and inv_riskInPts > 0 ?
+                  math.abs(te_tp1 - close) / inv_riskInPts : na
+bool te_rrGate = not na(te_rr_tp1) and te_rr_tp1 >= rrMinimum  // rrMinimum input, default 1.5
+Estimated: 25 lines.
+P1-8: erf_tradeReadiness + erf_entryGate
+
+
+float erf_tradeReadiness = math.min(
+    (re_resolutionState == "RESOLVED" ? 40.0 :
+     re_resolutionState == "PARTIALLY RESOLVED" ? 25.0 : 10.0) +
+    re_recursiveCompletionScore * 0.25 +
+    (100 - re_residualEnergyScore) * 0.20 +
+    erf_confidence * 0.15, 100.0)
+bool erf_entryGate = erf_tradeReadiness >= erfEntryThreshold  // input, default 45
+// Add erf_entryGate to longSignal and shortSignal conditions
+Estimated: 15 lines + 2 modifications to longSignal/shortSignal.
+P1-9: dashAdvancedMode input + basic gate
+
+
+bool dashAdvancedMode = input.bool(false, "Advanced Mode (Diagnostic Depth)", group="Dashboard")
+// Gate Panel B, Panel C Hypothesis rows, Panel P3 behind dashAdvancedMode
+Estimated: 1 input + ~20 conditional gates on existing panel sections.
+
+PART 7 — IMPLEMENTATION ORDER
+Phase 1 — Decision Completeness (Implement Now)
+All items here are derivable from existing V71 variables with no research required.
+1. P1-3 + P1-4 + P1-5: FRZ index tracking + distance + score-sort (prerequisite for P1-7)
+2. P1-1 + P1-2: Surface attractor prices numerically
+3. P1-6: Invalidation Engine (IE2 core)
+4. P1-7: Target Engine Phase 1 (FRZ-based TP + R:R gate)
+5. P1-8: erf_tradeReadiness + erf_entryGate → modify longSignal/shortSignal
+6. P1-9: dashAdvancedMode input gate
+7. Add inv_activeStop, te_tp1, te_rr_tp1 to Standard dashboard
+8. Validate on chart before Phase 2 begins
+Phase 2 — Intelligence Integration (After Phase 1 Validation)
+These require Phase 1 outputs to exist, and require calibration infrastructure.
+9. Rotation Intelligence Engine (RIE) — rot_pressure, rot_controlStability, rot_transferProbability, rot_state (weights as inputs)
+10. MCE 4-level extension (tf3, tf4 inputs + alignment scores + alignment summary strings)
+11. Narrative Engine (NE) — with C3 Demand/Supply Return semantic fix
+12. TQE Structure — formula skeleton with all weights as inputs, grade = display only
+13. DOE Phase 1 — structural gates only (no TQE grade dependency)
+14. Wave Registry (WR) — with C5 and C12 fixes
+15. FRZ ↔ ERF unification (frz_resolutionScore, frz_residualEnergy, frz_attractorWeight) — convergence flag as display only
+16. Traceability strings Phase 2 (trc_decisionSource, trc_confidenceBreakdown)
+17. Standard Mode COMMAND panel build (consume DOE, TE, IE2, TQE, NE outputs)
+18. Calibration period — observe TQE grades, adjust weights, validate grade→outcome relationship
+Phase 3 — Research Items (After Phase 2 Calibration)
+These require empirical evidence from Phase 2 operation.
+19. TQE calibration — finalize weights and grade thresholds based on observed outcomes
+20. DOE full (with TQE grade as action gate after calibration confirms thresholds)
+21. Target Engine Phase 2 — attractor-based TP (after directional validity confirmed)
+22. MCE expansion to 9 TF levels (after 4-level version validated)
+23. DeliveryWave Registry (DWR)
+24. Tertiary attractor (eae_tertiaryAttractorPrice) — after Phase 2 attractor direction validated
+25. Full Advanced Mode dashboard restructure
+26. Traceability chain Phase 3 (wave chain + delivery chain)
+27. frz_attractorConvergence grade promotion (after convergence signal validated)
+
+PART 8 — FINAL GO / NO-GO DECISION
+Engines: GO for Phase 1
+Component	Decision	Rationale
+ERF price display fix	GO	Zero risk, high value, 3 lines
+Invalidation Engine (IE2)	GO	Direct derivation from flipBot/flipTop, no research required
+Target Engine Phase 1 (FRZ TP)	GO	FRZ arrays already exist, directional filter is clean
+erf_tradeReadiness + erf_entryGate	GO	Closes the most critical audit gap (ERF not gating entries)
+FRZ sort + distance fix	GO	Display fix, no logic risk
+dashAdvancedMode input	GO	Additive, no existing functionality removed
+Engines: GO for Phase 2 (after Phase 1 validation)
+Component	Decision	Condition
+Rotation Intelligence Engine	GO WITH MODIFICATIONS	After C8 fix, weights as inputs
+MCE (4 TF)	GO WITH MODIFICATIONS	After C11, C15 fixes
+Narrative Engine	GO WITH MODIFICATIONS	After C3 fix
+TQE (structure only)	GO WITH MODIFICATIONS	After C4, C6 fixes; grade = display label only
+DOE Phase 1	GO WITH MODIFICATIONS	Structural gates only, C1 C2 C6 fixes applied
+Wave Registry	GO WITH MODIFICATIONS	After C5, C12 fixes
+FRZ ↔ ERF unification	GO WITH MODIFICATIONS	Convergence = display flag only (C7 applied)
+Components: NO-GO (Defer)
+Component	Decision	Rationale
+DeliveryWave Registry	NO-GO — Defer Phase 3	No decision consumers. Add complexity without trading value until later engines consume it.
+Tertiary attractor	NO-GO — Defer Phase 3	ATR×2.0 extension is geometric guess. Requires primary/secondary attractor validation first.
+TQE as DOE action gate	NO-GO until calibrated	Uncalibrated weights producing miscalibrated grades that gate entries is worse than no gate.
+frz_attractorConvergence → auto grade promotion	NO-GO until validated	Display flag only in Phase 1 and 2.
+MCE 9-TF expansion	NO-GO — Phase 3	Performance risk. Validate 4-TF version first.
+te_expectedPath as decision gate	NO-GO	Research hypothesis — display only.
+DOE confidence formula (§12.5)	NO-GO as written	Use modelConfidence + modifiers instead of spec formula until calibrated.
+PART 9 — CORRECTED V72 ARCHITECTURE BASELINE
+The following is the architecture that should actually be built, superseding the original V72 spec where conflicts exist:
+
+
+Market
+    ↓
+Physics Layer (UNCHANGED)
+    ↓
+Engine 1A — Lifecycle (UNCHANGED, SOLE AUTHORITY)
+    ↓
+ERF Layer (EDE + RE + EAE) — UNCHANGED computation
+  + erf_tradeReadiness (NEW — Phase 1)
+  + erf_entryGate → added to longSignal/shortSignal (NEW — Phase 1)
+  + eae_primaryAttractorPrice displayed numerically (FIX — Phase 1)
+  + eae_secondaryAttractorPrice displayed (FIX — Phase 1)
+    ↓
+FRZ Engine — UNCHANGED computation
+  + frz_bestIdx tracking (NEW — Phase 1)
+  + frz_distanceToZone (NEW — Phase 1)
+  + frz_resolutionScore / frz_residualEnergy / frz_attractorWeight (NEW — Phase 2)
+  + frz_attractorConvergence flag — display only (NEW — Phase 2, display only)
+  + Panel: score-sorted, T1 pinned (FIX — Phase 1)
+    ↓
+Invalidation Engine IE2 — NEW Phase 1
+  inv_activeStop / inv_bullOriginPrice / inv_bearOriginPrice
+  inv_demandFailPrice / inv_supplyFailPrice
+  inv_riskInPts / inv_riskInATR
+    ↓
+Target Engine TE — Phase 1 (FRZ-based) / Phase 2 (attractor-based)
+  te_tp1 [Phase 1: FRZ directional]
+  te_tp2 [Phase 2: primary attractor, directionally validated]
+  te_tp3 [Phase 3: tertiary, after validation]
+  te_rr_tp1/2 / te_rrGate
+    ↓
+Rotation Intelligence Engine RIE — NEW Phase 2
+  rot_pressure / rot_controlStability / rot_transferProbability / rot_state
+  (weights as tunable inputs, not hardcoded)
+    ↓
+MCE 4-level — NEW Phase 2
+  mce_tf[1-4]_direction / confidence / controlStability / rotationPressure
+  mce_alignmentScore (equal-weight, 4 TFs)
+  mce_htfAlignmentSummary / mce_execAlignmentSummary (not "narratives")
+    ↓
+Narrative Engine NE — NEW Phase 2
+  ne_dominantNarrative (8 types, Demand/Supply Return → Pullback fixed)
+  ne_narrativeStrength / ne_narrativeConflict / ne_narrativeAge
+    ↓
+Trade Qualification Engine TQE — STRUCTURE Phase 2
+  tqe_rawScore (all weights as inputs, equal-weight default)
+  tqe_grade (display label — DOES NOT gate doe_action until calibrated)
+  tqe_readiness (structural gate only)
+  tqe_riskLevel (rot_transferProbability + re_resolutionState — defensible)
+    ↓
+Decision Output Engine DOE — Phase 2
+  doe_bias / doe_action / doe_confidence (modelConfidence-based in Phase 1)
+  doe_tradeType / doe_entryMid/High/Low / doe_entryTrigger
+  doe_entryQuality (= tqe_grade, display only in Phase 2)
+    ↓
+Wave Registry WR — NEW Phase 2
+  waveId / parentWaveId / rootWaveId / birthBar / deathBar
+  waveDepth / spawn-phase / death-phase
+    ↓
+Traceability Phase 2
+  trc_decisionSource / trc_confidenceBreakdown
+    ↓
+Dashboard
+  Standard Mode: ~20 decision fields (all from DOE, TE, IE2, NE, TQE)
+  Advanced Mode (dashAdvancedMode = true): all existing diagnostic panels + RIE + MCE + ERF deep + FRZ deep + WR
+  [Phase 3: DWR + full traceability chain + 9-TF MCE]
+
+SUMMARY SCORECARD
+Dimension	Original V72 Spec	Corrected Baseline
+Engines approved as-written	0 of 11	—
+Engines approved with modifications	9 of 11	GO Phase 2
+Engines requiring research	1 of 11 (TQE formulas)	Structure GO, formulas deferred
+Engines deferred	1 of 11 (DWR)	Phase 3
+Critical blocking flaws	16	All resolved above
+Variables referenced that don't exist in V71	5 (frz_bestTop, frz_bestBot, frz_bestDir, frz_bestZoneMid, frz_bestZoneDir)	Fixed with array index approach
+Research hypotheses incorrectly coded as architecture	~12 weight/threshold formulas	Re-classified, exposed as inputs
+IE1A authority violations	0	0 — IE1A fully preserved
+Phase 1 items cleared for immediate implementation	—	9 items
+Overall Verdict: CONDITIONAL GO
+The V72 architecture direction is sound. The authority structure is clean. IE1A is fully preserved. The integration philosophy (reuse over reinvention) is correct. The gaps identified in the V71 audits are real and the proposed solutions are the right type of solutions.
+However, the specific formula constants, weights, and thresholds in the spec are research hypotheses that must not be hardcoded. Every numeric constant in every new engine must be an input parameter. Grades must be labeled provisional until calibrated against real outcomes. DOE action must be gated only on structural conditions until TQE is calibrated.
+Phase 1 can begin immediately. Phase 2 begins after Phase 1 is validated on live charts.
+
+V72 Implementation Readiness Report — End Produced by: Principal Architect Review Status: APPROVED FOR PHASED IMPLEMENTATION with modifications as specified
